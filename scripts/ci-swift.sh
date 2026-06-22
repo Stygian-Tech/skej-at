@@ -22,15 +22,15 @@ if [ "${SKEJ_DISABLE_SWIFTPM_SANDBOX:-}" = "1" ]; then
 fi
 
 run_tests() {
-  swift test "${SWIFT_PACKAGE_FLAGS[@]}" --package-path "$PACKAGE_PATH"
+  swift test ${SWIFT_PACKAGE_FLAGS[@]+"${SWIFT_PACKAGE_FLAGS[@]}"} --package-path "$PACKAGE_PATH"
 }
 
 run_build() {
   if [ "${SKEJ_DISABLE_SWIFTPM_SANDBOX:-}" = "1" ] && [ -d "/Library/Developer/CommandLineTools" ]; then
     DEVELOPER_DIR="/Library/Developer/CommandLineTools" \
-      swift build "${SWIFT_PACKAGE_FLAGS[@]}" -c release --package-path "$PACKAGE_PATH"
+      swift build ${SWIFT_PACKAGE_FLAGS[@]+"${SWIFT_PACKAGE_FLAGS[@]}"} -c release --package-path "$PACKAGE_PATH"
   else
-    swift build "${SWIFT_PACKAGE_FLAGS[@]}" -c release --package-path "$PACKAGE_PATH"
+    swift build ${SWIFT_PACKAGE_FLAGS[@]+"${SWIFT_PACKAGE_FLAGS[@]}"} -c release --package-path "$PACKAGE_PATH"
   fi
 }
 
