@@ -1,6 +1,5 @@
 import type { Metadata } from "next";
 import type { Viewport } from "next";
-import Script from "next/script";
 
 import "./globals.css";
 
@@ -8,8 +7,7 @@ const title = "Skej";
 const description = "Schedule posts from your PDS.";
 const lightInstallIcon = "/icons/skej-icon-light-512.png";
 const darkInstallIcon = "/icons/skej-icon-dark-512.png";
-const lightAppleTouchIcon = "/icons/skej-apple-touch-light.png";
-const darkAppleTouchIcon = "/icons/skej-apple-touch-dark.png";
+const appleTouchIcon = "/icons/skej-apple-touch.png";
 
 export const metadata: Metadata = {
   metadataBase: new URL(process.env.NEXT_PUBLIC_SITE_URL ?? "https://skej.at"),
@@ -55,20 +53,11 @@ export const metadata: Metadata = {
         media: "(prefers-color-scheme: dark)",
       },
     ],
-    apple: [
-      {
-        url: lightAppleTouchIcon,
-        sizes: "180x180",
-        type: "image/png",
-        media: "(prefers-color-scheme: light)",
-      },
-      {
-        url: darkAppleTouchIcon,
-        sizes: "180x180",
-        type: "image/png",
-        media: "(prefers-color-scheme: dark)",
-      },
-    ],
+    apple: {
+      url: appleTouchIcon,
+      sizes: "180x180",
+      type: "image/png",
+    },
   },
 };
 
@@ -87,67 +76,6 @@ export default function RootLayout({
 }>) {
   return (
     <html lang="en" className="antialiased">
-      <Script id="theme-install-icons" strategy="beforeInteractive">
-        {`
-          (function () {
-            var media = window.matchMedia("(prefers-color-scheme: dark)");
-            var icons = {
-              light: {
-                manifest: "/manifest-light.webmanifest",
-                icon: "${lightInstallIcon}",
-                apple: "${lightAppleTouchIcon}"
-              },
-              dark: {
-                manifest: "/manifest-dark.webmanifest",
-                icon: "${darkInstallIcon}",
-                apple: "${darkAppleTouchIcon}"
-              }
-            };
-
-            function upsertLink(selector, attributes) {
-              var link = document.querySelector(selector);
-              if (!link) {
-                link = document.createElement("link");
-                document.head.appendChild(link);
-              }
-
-              Object.keys(attributes).forEach(function (key) {
-                link.setAttribute(key, attributes[key]);
-              });
-            }
-
-            function applyThemeIcons() {
-              var active = media.matches ? icons.dark : icons.light;
-
-              upsertLink('link[rel="manifest"]', {
-                rel: "manifest",
-                href: active.manifest
-              });
-              upsertLink('link[data-theme-install-icon="icon"]', {
-                "data-theme-install-icon": "icon",
-                rel: "icon",
-                sizes: "512x512",
-                type: "image/png",
-                href: active.icon
-              });
-              upsertLink('link[data-theme-install-icon="apple"]', {
-                "data-theme-install-icon": "apple",
-                rel: "apple-touch-icon",
-                sizes: "180x180",
-                href: active.apple
-              });
-            }
-
-            applyThemeIcons();
-
-            if (typeof media.addEventListener === "function") {
-              media.addEventListener("change", applyThemeIcons);
-            } else if (typeof media.addListener === "function") {
-              media.addListener(applyThemeIcons);
-            }
-          })();
-        `}
-      </Script>
       <body>{children}</body>
     </html>
   );
