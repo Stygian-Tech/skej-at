@@ -3,6 +3,7 @@ import Link from "next/link";
 import { ArrowRight, CalendarClock, Cloud, Send } from "lucide-react";
 
 import { OAuthLoginForm } from "@/components/OAuthLoginForm";
+import { SkejLogoMark } from "@/components/SkejLogoMark";
 import { ThemeToggle } from "@/components/ThemeToggle";
 import { Badge } from "@/components/ui/badge";
 import { buttonVariants } from "@/components/ui/button";
@@ -32,9 +33,7 @@ export function LandingPage() {
       <div className="mx-auto flex w-full max-w-7xl flex-col gap-12">
         <header className="flex items-center justify-between gap-3 rounded-[2rem] border border-border bg-card/80 px-4 py-3 shadow-[0_14px_38px_rgba(35,31,32,0.08)] backdrop-blur">
           <Link className="flex items-center gap-3" href="/">
-            <div className="grid size-12 place-items-center rounded-2xl bg-primary text-xl font-black text-primary-foreground shadow-[0_10px_22px_rgba(255,79,109,0.14)]">
-              S
-            </div>
+            <SkejLogoMark />
             <div className="flex flex-col">
               <div className="flex items-center gap-2">
                 <span className="text-2xl font-black text-primary">Skej</span>
