@@ -20,9 +20,15 @@ let package = Package(
             dependencies: [
                 .product(name: "Hummingbird", package: "hummingbird"),
                 .product(name: "Crypto", package: "swift-crypto"),
+                .target(name: "CSQLite", condition: .when(platforms: [.linux])),
             ],
             path: "Sources/SkejKit",
             swiftSettings: [.swiftLanguageMode(.v6)]
+        ),
+        .systemLibrary(
+            name: "CSQLite",
+            path: "Sources/CSQLite",
+            providers: [.apt(["libsqlite3-dev"])]
         ),
         .executableTarget(
             name: "SkejAPI",
@@ -41,4 +47,3 @@ let package = Package(
         ),
     ]
 )
-

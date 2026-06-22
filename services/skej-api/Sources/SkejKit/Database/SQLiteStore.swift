@@ -1,4 +1,8 @@
+#if canImport(SQLite3)
 @preconcurrency import SQLite3
+#elseif canImport(CSQLite)
+@preconcurrency import CSQLite
+#endif
 import Foundation
 
 private let sqliteTransient = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
