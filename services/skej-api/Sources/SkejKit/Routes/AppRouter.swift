@@ -21,34 +21,63 @@ public func buildRouter(services: SkejServices) -> Router<BasicRequestContext> {
     }
 
     router.get("oauth/start") { request, _ in
-        let handle = request.uri.queryParameters.get("handle") ?? "skej.demo"
+        let handle = (request.uri.queryParameters.get("handle") ?? "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !handle.isEmpty else {
+            throw APIError(status: .badRequest, code: "missing_handle", message: "Bluesky handle is required")
+        }
         let state = randomToken()
+        let pkceVerifier = randomToken()
+        let nonce = randomToken()
+        let start = try await services.oauthClient.start(
+            handle: handle,
+            state: state,
+            pkceVerifier: pkceVerifier,
+            nonce: nonce
+        )
         try await services.store.createOAuthState(
             state: state,
             handle: handle,
-            pkceVerifier: randomToken(),
-            nonce: randomToken(),
+            pkceVerifier: pkceVerifier,
+            nonce: nonce,
+            authServer: start.authServer,
+            tokenEndpoint: start.tokenEndpoint,
+            pdsEndpoint: start.pdsEndpoint,
+            dpopKeyJSON: start.dpopKeyJSON,
             expiresAt: Timestamp.iso8601(Date().addingTimeInterval(600))
         )
         var headers = HTTPFields()
-        headers[.location] = "/oauth/callback?state=\(state)&code=local-dev"
+        headers[.location] = start.redirectURL
         return Response(status: .found, headers: headers)
     }
 
     router.get("oauth/callback") { request, _ in
-        let state = request.uri.queryParameters.get("state") ?? randomToken()
+        guard let state = request.uri.queryParameters.get("state") else {
+            throw APIError(status: .badRequest, code: "missing_state", message: "OAuth state is required")
+        }
+        guard let code = request.uri.queryParameters.get("code") else {
+            throw APIError(status: .badRequest, code: "missing_code", message: "OAuth authorization code is required")
+        }
+        let now = Timestamp.iso8601()
+        guard let oauthState = try await services.store.consumeOAuthState(state: state, now: now) else {
+            throw APIError(status: .badRequest, code: "invalid_state", message: "OAuth state expired or was already used")
+        }
+        let completion = try await services.oauthClient.complete(state: oauthState, code: code)
         let session = randomToken()
-        let handle = "skej.demo"
+        try await services.store.createOAuthSession(completion.session, now: now)
         try await services.store.createWebSession(
             sessionID: session,
-            did: "did:plc:\(state.prefix(12))",
-            handle: handle,
+            did: completion.viewer.did,
+            handle: completion.viewer.handle,
+            displayName: completion.viewer.displayName,
+            avatar: completion.viewer.avatar,
             expiresAt: Timestamp.iso8601(Date().addingTimeInterval(60 * 60 * 24 * 30))
         )
         var headers = HTTPFields()
-        headers[.location] = "/"
+        headers[.location] = "/app"
+        let secure = services.config.environment == .prod ? "; Secure" : ""
         headers[HTTPField.Name("Set-Cookie")!] =
-            "skej_session=\(session); Path=/; HttpOnly; SameSite=Lax"
+            "skej_session=\(session); Path=/; HttpOnly; SameSite=Lax; Max-Age=2592000\(secure)"
         return Response(status: .found, headers: headers)
     }
 
@@ -59,7 +88,10 @@ public func buildRouter(services: SkejServices) -> Router<BasicRequestContext> {
         return try jsonResponse(viewer)
     }
 
-    v1.post("logout") { _, _ in
+    v1.post("logout") { request, _ in
+        if let sessionID = cookie(named: "skej_session", in: request.headers[.cookie] ?? "") {
+            try await services.store.deleteWebSession(sessionID: sessionID)
+        }
         var headers = HTTPFields()
         headers[HTTPField.Name("Set-Cookie")!] =
             "skej_session=deleted; Path=/; HttpOnly; SameSite=Lax; Max-Age=0"
@@ -71,8 +103,11 @@ public func buildRouter(services: SkejServices) -> Router<BasicRequestContext> {
         let jobs = try await services.store.listScheduleJobs(did: viewer.did)
         let pdsRecords = try await services.pdsClient.listSchedules(did: viewer.did)
         let records = jobs.compactMap { job -> ScheduledPostSummary? in
-            guard let record = pdsRecords[job.rkey] else { return nil }
-            return summary(job: job, record: record)
+            if let record = pdsRecords[job.rkey] {
+                return summary(job: job, record: record)
+            }
+            guard job.status == .failed else { return nil }
+            return summary(job: job, record: failedFallbackRecord(job: job))
         }
         return try jsonResponse(ListSchedulesResponse(records: records))
     }
@@ -161,7 +196,7 @@ private func authenticate(_ request: Request, services: SkejServices) async thro
        let did = request.headers[HTTPField.Name("X-Skej-DID")!],
        !did.isEmpty
     {
-        return Viewer(did: did, handle: "local.skej.at", displayName: "Local")
+        return Viewer(did: did, handle: "local.skej.at", displayName: "Local", avatar: nil)
     }
     if let sessionID = cookie(named: "skej_session", in: request.headers[.cookie] ?? ""),
        let viewer = try await services.store.viewer(forSessionID: sessionID, now: Timestamp.iso8601())
@@ -189,7 +224,7 @@ private func validate(record: SkejScheduleRecord) throws {
     guard !record.posts.isEmpty else {
         throw APIError(status: .badRequest, code: "empty_posts", message: "Add at least one post")
     }
-    guard ISO8601DateFormatter().date(from: record.scheduledFor) != nil else {
+    guard Timestamp.date(from: record.scheduledFor) != nil else {
         throw APIError(status: .badRequest, code: "invalid_schedule", message: "Invalid scheduledFor")
     }
 }
@@ -205,6 +240,23 @@ private func summary(job: ScheduledJob, record: SkejScheduleRecord) -> Scheduled
         lastError: job.lastError,
         publishedUri: job.publishedUri,
         publishedCid: job.publishedCid
+    )
+}
+
+private func failedFallbackRecord(job: ScheduledJob) -> SkejScheduleRecord {
+    SkejScheduleRecord(
+        type: "at.skej.schedule",
+        scheduledFor: job.scheduledFor,
+        createdAt: job.scheduledFor,
+        updatedAt: Timestamp.iso8601(),
+        status: .failed,
+        lastError: job.lastError,
+        posts: [
+            PostPlan(
+                text: job.lastError ?? "Failed schedule record could not be loaded from the PDS.",
+                langs: ["en"]
+            ),
+        ]
     )
 }
 

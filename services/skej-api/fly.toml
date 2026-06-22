@@ -1,0 +1,45 @@
+# Deploy from the service directory through CI:
+#   bash scripts/fly-deploy-gateway.sh dev
+# Or locally:
+#   bash services/skej-api/deploy.sh dev
+
+app = 'skej-at-dev-gateway'
+primary_region = 'ams'
+
+[build]
+  dockerfile = 'Dockerfile'
+
+[deploy]
+  wait_timeout = '10m0s'
+
+[env]
+  APP_ENV = 'dev'
+  PORT = '8080'
+  PUBLIC_ORIGIN = 'https://testing.skej.at'
+  SKEJ_SQLITE_PATH = '/var/lib/skej-api/data/skej.sqlite'
+  SKEJ_WORKER_ENABLED = 'true'
+  SKEJ_WORKER_INTERVAL_SECONDS = '30'
+
+[mounts]
+  source = 'skej_api_data'
+  destination = '/var/lib/skej-api/data'
+
+[http_service]
+  internal_port = 8080
+  force_https = true
+  auto_stop_machines = 'stop'
+  auto_start_machines = true
+  min_machines_running = 0
+
+  [[http_service.checks]]
+    interval = '30s'
+    timeout = '10s'
+    grace_period = '1m0s'
+    method = 'GET'
+    path = '/health'
+
+[[vm]]
+  memory = '512mb'
+  cpu_kind = 'shared'
+  cpus = 1
+  memory_mb = 512

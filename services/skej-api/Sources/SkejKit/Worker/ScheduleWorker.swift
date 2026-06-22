@@ -47,6 +47,12 @@ public struct ScheduleWorker: Sendable {
             )
         } catch {
             let message = String(describing: error)
+            if var record = try? await pdsClient.getSchedule(did: job.did, rkey: job.rkey) {
+                record.status = .failed
+                record.lastError = message
+                record.updatedAt = nowString
+                try? await pdsClient.writeSchedule(did: job.did, rkey: job.rkey, record: record)
+            }
             try? await store.markJobFailed(did: job.did, rkey: job.rkey, error: message, now: nowString)
         }
     }
@@ -56,5 +62,14 @@ public enum Timestamp {
     public static func iso8601(_ date: Date = Date()) -> String {
         ISO8601DateFormatter().string(from: date)
     }
-}
 
+    public static func date(from string: String) -> Date? {
+        let formatter = ISO8601DateFormatter()
+        if let date = formatter.date(from: string) {
+            return date
+        }
+
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return formatter.date(from: string)
+    }
+}

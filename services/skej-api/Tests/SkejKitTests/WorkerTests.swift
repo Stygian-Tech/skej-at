@@ -58,8 +58,10 @@ struct WorkerTests {
         await worker.runTick(now: ISO8601DateFormatter().date(from: "2026-01-01T10:00:01Z")!)
 
         let job = try await store.scheduleJob(did: "did:plc:test", rkey: "3lfail")
+        let failedRecord = try await pds.getSchedule(did: "did:plc:test", rkey: "3lfail")
         #expect(job?.status == .failed)
         #expect(job?.lastError != nil)
-        #expect(try await pds.getSchedule(did: "did:plc:test", rkey: "3lfail") != nil)
+        #expect(failedRecord?.status == .failed)
+        #expect(failedRecord?.lastError != nil)
     }
 }

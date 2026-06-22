@@ -47,6 +47,30 @@
   --input: #eadfe8;
   --ring: #00a8c8;
   --radius: 1.125rem;
+  --page-background: linear-gradient(135deg, #fff9fb 0%, #fbfffe 55%, #fffaf0 100%);
+}
+
+.dark {
+  --background: #08070a;
+  --foreground: #fbf7fa;
+  --card: #121016;
+  --card-foreground: #fbf7fa;
+  --popover: #121016;
+  --popover-foreground: #fbf7fa;
+  --primary: #ff667f;
+  --primary-foreground: #ffffff;
+  --secondary: #0d2730;
+  --secondary-foreground: #d9f5fb;
+  --muted: #1a1620;
+  --muted-foreground: #b9abb7;
+  --accent: #d8bc53;
+  --accent-foreground: #211900;
+  --destructive: #ff6570;
+  --destructive-foreground: #ffffff;
+  --border: #2c2430;
+  --input: #332a36;
+  --ring: #58c7dc;
+  --page-background: linear-gradient(135deg, #08070a 0%, #0b0d10 58%, #0f0c09 100%);
 }
 
 * {
@@ -61,10 +85,7 @@ html {
 body {
   min-height: 100dvh;
   margin: 0;
-  background:
-    radial-gradient(circle at top left, rgba(255, 217, 74, 0.42), transparent 24rem),
-    radial-gradient(circle at 85% 8%, rgba(78, 213, 255, 0.34), transparent 22rem),
-    linear-gradient(135deg, #fff8fb 0%, #f7fffd 46%, #fff7dc 100%);
+  background: var(--page-background);
   color: var(--foreground);
   font-family:
     ui-rounded,
@@ -110,4 +131,3 @@ button svg {
     }
   }
 }
-

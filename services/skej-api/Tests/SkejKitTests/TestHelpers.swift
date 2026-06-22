@@ -15,7 +15,8 @@ func makeTestServices() async throws -> SkejServices {
             workerEnabled: false
         ),
         store: store,
-        pdsClient: InMemoryPDSClient()
+        pdsClient: InMemoryPDSClient(),
+        oauthClient: LocalOAuthClient()
     )
 }
 

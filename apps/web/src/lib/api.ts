@@ -15,7 +15,9 @@ async function requestJSON<T>(input: RequestInfo | URL, init?: RequestInit): Pro
     const body = (await response.json().catch(() => null)) as
       | { message?: string; error?: string }
       | null;
-    throw new Error(body?.message ?? body?.error ?? `Request failed (${response.status})`);
+    throw new Error(
+      body?.message ?? body?.error ?? "Skej could not load this right now. Try again soon."
+    );
   }
 
   return (await response.json()) as T;
@@ -29,6 +31,12 @@ export function startOAuth(handle: string): string {
 
 export async function getViewer(): Promise<Viewer> {
   return requestJSON<Viewer>("/v1/me");
+}
+
+export async function logout(): Promise<void> {
+  await requestJSON<{ ok: boolean }>("/v1/logout", {
+    method: "POST",
+  });
 }
 
 export async function listSchedules(): Promise<ScheduledPostSummary[]> {
@@ -71,4 +79,3 @@ export async function publishNow(rkey: string): Promise<ScheduledPostSummary> {
     }
   );
 }
-
