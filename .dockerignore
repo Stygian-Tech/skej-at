@@ -1,0 +1,13 @@
+.git
+.github
+.turbo
+node_modules
+apps/web/.next
+apps/web/tsconfig.tsbuildinfo
+services/skej-api/.build
+**/.DS_Store
+**/.env
+**/.env.*
+*.sqlite
+*.sqlite-shm
+*.sqlite-wal

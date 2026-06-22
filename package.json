@@ -5,13 +5,13 @@
   "scripts": {
     "build": "bun run build:web && bun run build:swift",
     "build:web": "turbo build",
-    "build:swift": "env DEVELOPER_DIR=/Applications/Xcode-beta.app/Contents/Developer swift build --package-path services/skej-api",
+    "build:swift": "bash scripts/ci-swift.sh build",
     "dev": "turbo dev",
     "lint": "turbo lint",
     "typecheck": "turbo typecheck",
     "test": "bun run test:web && bun run test:swift",
     "test:web": "turbo test",
-    "test:swift": "env DEVELOPER_DIR=/Applications/Xcode-beta.app/Contents/Developer swift test --package-path services/skej-api",
+    "test:swift": "bash scripts/ci-swift.sh test",
     "verify": "bun run lint && bun run typecheck && bun run test && bun run build",
     "clean": "turbo clean"
   },
