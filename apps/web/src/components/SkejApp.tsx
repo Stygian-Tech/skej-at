@@ -49,20 +49,23 @@ const sampleViewer: Viewer = {
   displayName: "Sam",
 };
 
-const initialSchedule = new Date(Date.now() + 1000 * 60 * 60 * 3);
+const demoCreatedAt = "2026-06-22T15:00:00.000Z";
+const demoScheduledFor = "2099-06-22T18:30:00.000Z";
+const demoFailedFor = "2026-06-22T13:44:00.000Z";
+const initialSchedule = new Date("2099-06-22T19:00:00.000Z");
 
 const sampleQueue: ScheduledPostSummary[] = [
   {
     rkey: "3l6sparkle",
     did: sampleViewer.did,
-    scheduledFor: new Date(Date.now() + 1000 * 60 * 42).toISOString(),
+    scheduledFor: demoScheduledFor,
     status: "scheduled",
     attempts: 0,
     record: {
       $type: "at.skej.schedule",
-      scheduledFor: new Date(Date.now() + 1000 * 60 * 42).toISOString(),
-      createdAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString(),
+      scheduledFor: demoScheduledFor,
+      createdAt: demoCreatedAt,
+      updatedAt: demoCreatedAt,
       status: "scheduled",
       posts: [
         {
@@ -76,15 +79,15 @@ const sampleQueue: ScheduledPostSummary[] = [
   {
     rkey: "3l6retryme",
     did: sampleViewer.did,
-    scheduledFor: new Date(Date.now() - 1000 * 60 * 16).toISOString(),
+    scheduledFor: demoFailedFor,
     status: "failed",
     attempts: 2,
     lastError: "PDS rejected an image without alt text.",
     record: {
       $type: "at.skej.schedule",
-      scheduledFor: new Date(Date.now() - 1000 * 60 * 16).toISOString(),
-      createdAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString(),
+      scheduledFor: demoFailedFor,
+      createdAt: demoCreatedAt,
+      updatedAt: demoCreatedAt,
       status: "failed",
       posts: [
         {
@@ -252,7 +255,12 @@ export function SkejApp() {
               S
             </div>
             <div className="flex flex-col">
-              <span className="text-2xl font-black text-primary">Skej</span>
+              <div className="flex items-center gap-2">
+                <span className="text-2xl font-black text-primary">Skej</span>
+                <span className="inline-flex shrink-0 items-center rounded-full border border-[#ffd0da] bg-[#fff4a8] px-1.5 py-0.5 text-[10px] font-black leading-snug text-[#5d4500]">
+                  Alpha
+                </span>
+              </div>
               <span className="text-xs font-bold text-muted-foreground">
                 Schedule posts from your PDS
               </span>
@@ -275,6 +283,37 @@ export function SkejApp() {
             </Button>
           )}
         </header>
+
+        <Card className="relative overflow-hidden border-[#ffd0da] bg-[#fffafd]/90">
+          <CardContent className="relative flex flex-col gap-4 p-4 sm:flex-row sm:items-center sm:justify-between sm:p-5">
+            <div className="flex items-start gap-3">
+              <div className="grid size-11 shrink-0 place-items-center rounded-2xl bg-primary text-primary-foreground shadow-[0_14px_30px_rgba(255,79,109,0.18)]">
+                <Sparkles className="size-5" />
+              </div>
+              <div className="flex min-w-0 flex-col gap-1">
+                <div className="flex flex-wrap items-center gap-2">
+                  <Badge variant="sunny">Alpha</Badge>
+                  <h2 className="text-base font-black leading-tight sm:text-lg">
+                    Skej is still getting tuned.
+                  </h2>
+                </div>
+                <p className="max-w-2xl text-sm font-semibold leading-6 text-muted-foreground">
+                  Scheduling works against public PDS draft records while OAuth,
+                  publishing, and recovery harden up. Keep a copy of anything
+                  mission-critical for now.
+                </p>
+              </div>
+            </div>
+            <div className="flex flex-wrap gap-2 text-xs font-black text-[#27464b] sm:justify-end">
+              <span className="rounded-full border border-white/80 bg-white/80 px-3 py-1.5">
+                Public PDS drafts
+              </span>
+              <span className="rounded-full border border-white/80 bg-white/80 px-3 py-1.5">
+                SQLite queue index
+              </span>
+            </div>
+          </CardContent>
+        </Card>
 
         <section className="grid gap-5 lg:grid-cols-[minmax(0,1.05fr)_minmax(360px,0.75fr)]">
           <div className="flex flex-col gap-5">
