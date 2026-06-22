@@ -47,6 +47,12 @@ public struct ScheduleWorker: Sendable {
             )
         } catch {
             let message = String(describing: error)
+            if var record = try? await pdsClient.getSchedule(did: job.did, rkey: job.rkey) {
+                record.status = .failed
+                record.lastError = message
+                record.updatedAt = nowString
+                try? await pdsClient.writeSchedule(did: job.did, rkey: job.rkey, record: record)
+            }
             try? await store.markJobFailed(did: job.did, rkey: job.rkey, error: message, now: nowString)
         }
     }

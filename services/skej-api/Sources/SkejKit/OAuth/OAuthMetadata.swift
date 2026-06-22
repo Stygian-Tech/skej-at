@@ -11,9 +11,8 @@ public enum OAuthMetadata {
             "grant_types": .array([.string("authorization_code"), .string("refresh_token")]),
             "response_types": .array([.string("code")]),
             "redirect_uris": .array([.string("\(origin)/oauth/callback")]),
-            "scope": .string("atproto transition:generic repo:at.skej.schedule?create,update,delete repo:app.bsky.feed.post?create"),
-            "token_endpoint_auth_method": .string("private_key_jwt"),
-            "jwks_uri": .string("\(origin)/oauth/jwks.json"),
+            "scope": .string("atproto transition:generic"),
+            "token_endpoint_auth_method": .string("none"),
             "dpop_bound_access_tokens": .bool(true),
         ]
     }
@@ -22,4 +21,3 @@ public enum OAuthMetadata {
         ["keys": []]
     }
 }
-

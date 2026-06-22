@@ -3,7 +3,7 @@ import type { Metadata } from "next";
 import "./globals.css";
 
 const title = "Skej";
-const description = "Schedule posts from your PDS.";
+const description = "Schedule Bluesky posts.";
 
 export const metadata: Metadata = {
   metadataBase: new URL(process.env.NEXT_PUBLIC_SITE_URL ?? "https://skej.at"),

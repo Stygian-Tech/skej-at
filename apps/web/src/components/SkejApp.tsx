@@ -6,7 +6,6 @@ import {
   CalendarClock,
   CheckCircle2,
   Clock3,
-  Cloud,
   ImagePlus,
   Link2,
   ListRestart,
@@ -59,6 +58,19 @@ import { cn } from "@/lib/utils";
 import { PostPlan, ScheduledPostSummary, Viewer } from "@/lib/skejTypes";
 
 type AuthStatus = "loading" | "anonymous" | "authenticated";
+
+const friendlyErrorReplacements: Array<[RegExp, string]> = [
+  [/\bOAuth\b/gi, "sign-in"],
+  [/\bPDS\b/g, "Bluesky account"],
+  [/\bSQLite\b/gi, "Skej"],
+  [/\bAPI\b/g, "service"],
+  [/\bendpoint\b/gi, "service"],
+  [/\btoken\b/gi, "session"],
+  [/\bat\.skej\.schedule\b/g, "scheduled post"],
+  [/\bapp\.bsky\.feed\.post\b/g, "Bluesky post"],
+  [/\brecord\b/gi, "post"],
+  [/\bworker\b/gi, "scheduler"],
+];
 
 function defaultScheduleDate(minutes = 180) {
   return new Date(Date.now() + minutes * 60_000);
@@ -126,6 +138,13 @@ function formatSchedule(value: string) {
   }).format(new Date(value));
 }
 
+function friendlyErrorMessage(message: string) {
+  return friendlyErrorReplacements.reduce(
+    (copy, [pattern, replacement]) => copy.replace(pattern, replacement),
+    message
+  );
+}
+
 function upsertQueueItem(
   queue: ScheduledPostSummary[],
   item: ScheduledPostSummary
@@ -144,6 +163,26 @@ function splitCSV(value: string) {
 
 function firstInitial(viewer: Viewer | null) {
   return (viewer?.displayName ?? viewer?.handle ?? "S").charAt(0).toUpperCase();
+}
+
+function ViewerAvatar({ viewer }: { viewer: Viewer | null }) {
+  if (viewer?.avatar) {
+    return (
+      // eslint-disable-next-line @next/next/no-img-element
+      <img
+        alt=""
+        className="size-8 rounded-full border border-border object-cover"
+        referrerPolicy="no-referrer"
+        src={viewer.avatar}
+      />
+    );
+  }
+
+  return (
+    <div className="grid size-8 place-items-center rounded-full bg-secondary text-sm font-black text-secondary-foreground">
+      {firstInitial(viewer)}
+    </div>
+  );
 }
 
 export function SkejApp() {
@@ -199,7 +238,7 @@ export function SkejApp() {
         setSelectedRkey(null);
         setAuthStatus("anonymous");
         if (error instanceof Error && !error.message.toLowerCase().includes("sign in")) {
-          setActionError(error.message);
+          setActionError(friendlyErrorMessage(error.message));
         }
       }
     }
@@ -275,7 +314,11 @@ export function SkejApp() {
       resetComposer();
       setScheduleOpen(false);
     } catch (error) {
-      setActionError(error instanceof Error ? error.message : "Could not schedule post.");
+      setActionError(
+        error instanceof Error
+          ? friendlyErrorMessage(error.message)
+          : "Could not schedule post."
+      );
     } finally {
       setIsMutating(false);
     }
@@ -293,7 +336,9 @@ export function SkejApp() {
       setSelectedRkey(updated.rkey);
       setActionMessage("Post rescheduled for retry.");
     } catch (error) {
-      setActionError(error instanceof Error ? error.message : "Could not retry post.");
+      setActionError(
+        error instanceof Error ? friendlyErrorMessage(error.message) : "Could not retry post."
+      );
     } finally {
       setIsMutating(false);
     }
@@ -309,7 +354,11 @@ export function SkejApp() {
       if (editingRkey === rkey) resetComposer();
       setActionMessage("Schedule deleted.");
     } catch (error) {
-      setActionError(error instanceof Error ? error.message : "Could not delete schedule.");
+      setActionError(
+        error instanceof Error
+          ? friendlyErrorMessage(error.message)
+          : "Could not delete schedule."
+      );
     } finally {
       setIsMutating(false);
     }
@@ -324,7 +373,11 @@ export function SkejApp() {
       setSelectedRkey(published.rkey);
       setActionMessage("Post published.");
     } catch (error) {
-      setActionError(error instanceof Error ? error.message : "Could not publish post.");
+      setActionError(
+        error instanceof Error
+          ? friendlyErrorMessage(error.message)
+          : "Could not publish post."
+      );
     } finally {
       setIsMutating(false);
     }
@@ -354,9 +407,9 @@ export function SkejApp() {
   return (
     <main className="min-h-dvh overflow-hidden px-4 pb-28 pt-4 text-foreground sm:px-6 lg:px-8 lg:pb-4">
       <div className="mx-auto flex w-full max-w-7xl flex-col gap-5">
-        <header className="flex items-center justify-between gap-3 rounded-[2rem] border border-border bg-card/80 px-4 py-3 shadow-[0_20px_60px_rgba(70,52,70,0.1)] backdrop-blur">
+        <header className="flex items-center justify-between gap-3 rounded-[2rem] border border-border bg-card/80 px-4 py-3 shadow-[0_14px_38px_rgba(35,31,32,0.08)] backdrop-blur">
           <Link className="flex min-w-0 items-center gap-3" href="/">
-            <div className="grid size-12 shrink-0 place-items-center rounded-2xl bg-primary text-xl font-black text-primary-foreground shadow-[0_14px_30px_rgba(255,79,109,0.22)]">
+            <div className="grid size-12 shrink-0 place-items-center rounded-2xl bg-primary text-xl font-black text-primary-foreground shadow-[0_10px_22px_rgba(255,79,109,0.14)]">
               S
             </div>
             <div className="flex min-w-0 flex-col">
@@ -365,7 +418,7 @@ export function SkejApp() {
                 <Badge variant="sunny">Alpha</Badge>
               </div>
               <span className="truncate text-xs font-bold text-muted-foreground">
-                Schedule posts from your PDS
+                Schedule Bluesky posts
               </span>
             </div>
           </Link>
@@ -373,9 +426,7 @@ export function SkejApp() {
             <ThemeToggle />
             {isAuthenticated ? (
               <div className="flex items-center gap-2 rounded-full border border-border bg-card py-1 pl-1 pr-2">
-                <div className="grid size-8 place-items-center rounded-full bg-secondary text-sm font-black text-secondary-foreground">
-                  {firstInitial(viewer)}
-                </div>
+                <ViewerAvatar viewer={viewer} />
                 <div className="hidden flex-col text-right sm:flex">
                   <span className="text-xs font-black">{viewer.displayName ?? "Skej user"}</span>
                   <span className="text-xs text-muted-foreground">@{viewer.handle}</span>
@@ -395,7 +446,7 @@ export function SkejApp() {
                 size="sm"
                 onClick={() => {
                   document
-                    .getElementById("connect-pds")
+                    .getElementById("connect-account")
                     ?.scrollIntoView({ behavior: "smooth", block: "start" });
                 }}
               >
@@ -409,29 +460,29 @@ export function SkejApp() {
         <Card className="border-border bg-card/90">
           <CardContent className="flex flex-col gap-4 p-4 sm:flex-row sm:items-center sm:justify-between sm:p-5">
             <div className="flex items-start gap-3">
-              <div className="grid size-11 shrink-0 place-items-center rounded-2xl bg-primary text-primary-foreground shadow-[0_14px_30px_rgba(255,79,109,0.18)]">
+              <div className="grid size-11 shrink-0 place-items-center rounded-2xl bg-primary text-primary-foreground shadow-[0_10px_22px_rgba(255,79,109,0.12)]">
                 <Sparkles />
               </div>
               <div className="flex min-w-0 flex-col gap-1">
                 <div className="flex flex-wrap items-center gap-2">
                   <Badge variant="sunny">Alpha</Badge>
                   <h2 className="text-base font-black leading-tight sm:text-lg">
-                    Skej is still getting tuned.
+                    Work in progress.
                   </h2>
                 </div>
                 <p className="max-w-2xl text-sm font-semibold leading-6 text-muted-foreground">
-                  Scheduling uses OAuth app sessions and a SQLite queue while the
-                  production PDS integration hardens up. Keep a copy of anything
+                  Skej is in alpha, so features, wording, and workflows may change
+                  quickly and sometimes drastically. Keep a copy of anything
                   mission-critical for now.
                 </p>
               </div>
             </div>
             <div className="flex flex-wrap gap-2 text-xs font-black text-secondary-foreground sm:justify-end">
               <span className="rounded-full border border-border bg-secondary px-3 py-1.5">
-                OAuth session
+                Scheduling basics
               </span>
               <span className="rounded-full border border-border bg-secondary px-3 py-1.5">
-                SQLite queue
+                Fast changes
               </span>
             </div>
           </CardContent>
@@ -462,12 +513,12 @@ export function SkejApp() {
             ) : null}
 
             {!isAuthenticated && authStatus !== "loading" ? (
-              <Card className="overflow-hidden" id="connect-pds">
+              <Card className="overflow-hidden" id="connect-account">
                 <CardHeader>
-                  <CardTitle>Connect your PDS</CardTitle>
+                  <CardTitle>Connect Bluesky</CardTitle>
                   <CardDescription>
-                    Start OAuth to create an app session, then Skej can list and manage
-                    your scheduled posts.
+                    Enter your Bluesky handle so Skej can show your scheduled posts
+                    and create new ones for that account.
                   </CardDescription>
                 </CardHeader>
                 <CardContent className="flex flex-col gap-4">
@@ -489,7 +540,7 @@ export function SkejApp() {
                       </CardDescription>
                     </div>
                     <Badge variant="sunny">
-                      {editingRkey ? `Editing ${editingRkey}` : "Public post plan"}
+                      {editingRkey ? "Editing scheduled post" : "Public post plan"}
                     </Badge>
                   </div>
                 </CardHeader>
@@ -498,8 +549,8 @@ export function SkejApp() {
                     <div className="flex gap-3">
                       <AlertCircle className="mt-0.5 shrink-0 text-primary" />
                       <p className="text-xs font-semibold leading-5 text-muted-foreground sm:text-sm sm:leading-6">
-                        Scheduled content is stored in the alpha queue until the worker
-                        publishes it as an <span className="font-black">app.bsky.feed.post</span>.
+                        Skej keeps scheduled content ready until it is time to
+                        publish to Bluesky.
                       </p>
                     </div>
                   </div>
@@ -518,7 +569,7 @@ export function SkejApp() {
                           className={cn(
                             "flex min-h-11 items-center justify-center gap-2 rounded-full border text-sm font-black transition sm:min-h-12",
                             draft.mode === item.mode
-                              ? "border-primary bg-primary text-primary-foreground shadow-[0_12px_24px_rgba(255,79,109,0.2)]"
+                              ? "border-primary bg-primary text-primary-foreground shadow-[0_8px_18px_rgba(255,79,109,0.12)]"
                               : "border-border bg-card text-muted-foreground hover:bg-muted"
                           )}
                           onClick={() =>
@@ -584,8 +635,8 @@ export function SkejApp() {
                   {draft.mode === "reply" ? (
                     <div className="grid gap-3 rounded-[1.25rem] border border-border bg-card p-3 sm:grid-cols-2">
                       <Input
-                        aria-label="Reply root URI"
-                        placeholder="Root post URI"
+                        aria-label="Original post link"
+                        placeholder="Original post link"
                         value={draft.posts[0]?.reply?.root.uri ?? ""}
                         onChange={(event) =>
                           updateFirstPost((post) => {
@@ -604,8 +655,8 @@ export function SkejApp() {
                         }
                       />
                       <Input
-                        aria-label="Reply root CID"
-                        placeholder="Root CID"
+                        aria-label="Original post ID"
+                        placeholder="Original post ID"
                         value={draft.posts[0]?.reply?.root.cid ?? ""}
                         onChange={(event) =>
                           updateFirstPost((post) => {
@@ -624,8 +675,8 @@ export function SkejApp() {
                         }
                       />
                       <Input
-                        aria-label="Reply parent URI"
-                        placeholder="Parent post URI"
+                        aria-label="Reply target link"
+                        placeholder="Post you are replying to"
                         value={draft.posts[0]?.reply?.parent.uri ?? ""}
                         onChange={(event) =>
                           updateFirstPost((post) => {
@@ -644,8 +695,8 @@ export function SkejApp() {
                         }
                       />
                       <Input
-                        aria-label="Reply parent CID"
-                        placeholder="Parent CID"
+                        aria-label="Reply target ID"
+                        placeholder="Reply target ID"
                         value={draft.posts[0]?.reply?.parent.cid ?? ""}
                         onChange={(event) =>
                           updateFirstPost((post) => {
@@ -669,8 +720,8 @@ export function SkejApp() {
                   {draft.mode === "quote" ? (
                     <div className="grid gap-3 rounded-[1.25rem] border border-border bg-card p-3 sm:grid-cols-2">
                       <Input
-                        aria-label="Quote post URI"
-                        placeholder="Quoted post URI"
+                        aria-label="Quoted post link"
+                        placeholder="Quoted post link"
                         value={draft.posts[0]?.embed?.record?.uri ?? ""}
                         onChange={(event) =>
                           updateFirstPost((post) => ({
@@ -686,8 +737,8 @@ export function SkejApp() {
                         }
                       />
                       <Input
-                        aria-label="Quote post CID"
-                        placeholder="Quoted post CID"
+                        aria-label="Quoted post ID"
+                        placeholder="Quoted post ID"
                         value={draft.posts[0]?.embed?.record?.cid ?? ""}
                         onChange={(event) =>
                           updateFirstPost((post) => ({
@@ -742,7 +793,7 @@ export function SkejApp() {
                             external: post.embed?.external ?? {
                               uri: "https://skej.at",
                               title: "Skej",
-                              description: "Schedule posts from your PDS.",
+                              description: "Plan Bluesky posts ahead with Skej.",
                             },
                           },
                         }))
@@ -933,7 +984,7 @@ export function SkejApp() {
             ) : null}
           </div>
 
-          <nav className="sticky bottom-[max(0.5rem,env(safe-area-inset-bottom))] z-10 rounded-full border border-border bg-card/95 p-1.5 shadow-[0_18px_50px_rgba(70,52,70,0.18)] backdrop-blur lg:hidden">
+          <nav className="sticky bottom-[max(0.5rem,env(safe-area-inset-bottom))] z-10 rounded-full border border-border bg-card/95 p-1.5 shadow-[0_12px_30px_rgba(35,31,32,0.12)] backdrop-blur lg:hidden">
             <div className="grid grid-cols-3 gap-2">
               <Button
                 variant="default"
@@ -947,7 +998,7 @@ export function SkejApp() {
               </Button>
               <Button variant="secondary" size="sm" onClick={() => setScheduleOpen(true)}>
                 <ListRestart data-icon="inline-start" />
-                Queue
+                Scheduled
               </Button>
               <Button
                 variant="outline"
@@ -955,7 +1006,7 @@ export function SkejApp() {
                 onClick={isAuthenticated ? signOut : undefined}
               >
                 <LockKeyhole data-icon="inline-start" />
-                OAuth
+                Account
               </Button>
             </div>
           </nav>
@@ -965,15 +1016,15 @@ export function SkejApp() {
               <CardHeader>
                 <div className="flex items-center justify-between gap-3">
                   <div>
-                    <CardTitle>Queue</CardTitle>
+                    <CardTitle>Scheduled posts</CardTitle>
                     <CardDescription>
-                      {isQueueLoading ? "Refreshing..." : `${queue.length} scheduled records`}
+                      {isQueueLoading ? "Refreshing..." : `${queue.length} scheduled posts`}
                     </CardDescription>
                   </div>
                   <Button
                     variant="secondary"
                     size="icon"
-                    aria-label="Refresh queue"
+                    aria-label="Refresh scheduled posts"
                     onClick={refreshSchedules}
                     disabled={!isAuthenticated || isQueueLoading}
                   >
@@ -984,12 +1035,12 @@ export function SkejApp() {
               <CardContent className="flex flex-col gap-3">
                 {!isAuthenticated ? (
                   <div className="rounded-[1.25rem] border border-border bg-muted p-4 text-sm font-semibold text-muted-foreground">
-                    Connect your PDS to load scheduled posts.
+                    Connect Bluesky to load scheduled posts.
                   </div>
                 ) : null}
                 {isAuthenticated && queue.length === 0 ? (
                   <div className="rounded-[1.25rem] border border-border bg-muted p-4 text-sm font-semibold text-muted-foreground">
-                    Nothing queued yet. Write a post and schedule it.
+                    Nothing scheduled yet. Write a post and choose a time.
                   </div>
                 ) : null}
                 {queue.map((item) => (
@@ -1017,7 +1068,7 @@ export function SkejApp() {
                     </div>
                     {item.lastError ? (
                       <span className="rounded-xl bg-muted px-3 py-2 text-xs font-bold text-destructive">
-                        {item.lastError}
+                        {friendlyErrorMessage(item.lastError)}
                       </span>
                     ) : null}
                   </button>
@@ -1029,10 +1080,12 @@ export function SkejApp() {
               <Card className="border-border bg-secondary">
                 <CardHeader>
                   <CardTitle className="flex items-center gap-2">
-                    <Cloud />
-                    Schedule record
+                    <CalendarClock />
+                    Schedule details
                   </CardTitle>
-                  <CardDescription>{selected.rkey}</CardDescription>
+                  <CardDescription>
+                    Scheduled for {formatSchedule(selected.scheduledFor)}
+                  </CardDescription>
                 </CardHeader>
                 <CardContent className="flex flex-col gap-4">
                   <div className="rounded-[1.25rem] bg-card/80 p-4">
@@ -1042,8 +1095,8 @@ export function SkejApp() {
                   </div>
                   <div className="grid grid-cols-2 gap-2 text-xs font-bold text-muted-foreground">
                     <div className="rounded-2xl bg-card/70 p-3">
-                      Collection
-                      <span className="block text-foreground">at.skej.schedule</span>
+                      Status
+                      <span className="block text-foreground">{selected.status}</span>
                     </div>
                     <div className="rounded-2xl bg-card/70 p-3">
                       Attempts
@@ -1082,14 +1135,14 @@ export function SkejApp() {
           className="fixed inset-0 z-20 bg-foreground/30 p-4 backdrop-blur-sm"
           role="dialog"
         >
-          <div className="mx-auto mt-[12dvh] flex max-w-md flex-col gap-4 rounded-[2rem] border border-border bg-card p-5 shadow-[0_24px_80px_rgba(35,31,32,0.25)]">
+          <div className="mx-auto mt-[12dvh] flex max-w-md flex-col gap-4 rounded-[2rem] border border-border bg-card p-5 shadow-[0_16px_48px_rgba(35,31,32,0.18)]">
             <div className="flex items-start justify-between gap-3">
               <div>
                 <h2 className="text-xl font-black" id="schedule-sheet-title">
                   Schedule
                 </h2>
                 <p className="text-sm font-semibold text-muted-foreground">
-                  Pick when the worker should publish.
+                  Pick when Skej should publish.
                 </p>
               </div>
               <Button
@@ -1115,8 +1168,7 @@ export function SkejApp() {
               />
             </label>
             <div className="rounded-2xl bg-secondary p-4 text-sm font-semibold text-secondary-foreground">
-              The worker stores the scheduled job and draft record in SQLite for this
-              alpha build.
+              Skej keeps this draft ready until the scheduled time.
             </div>
             <Button disabled={issues.length > 0 || firstPostCount === 0} onClick={scheduleDraft}>
               <CalendarClock data-icon="inline-start" />

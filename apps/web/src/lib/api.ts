@@ -15,7 +15,9 @@ async function requestJSON<T>(input: RequestInfo | URL, init?: RequestInit): Pro
     const body = (await response.json().catch(() => null)) as
       | { message?: string; error?: string }
       | null;
-    throw new Error(body?.message ?? body?.error ?? `Request failed (${response.status})`);
+    throw new Error(
+      body?.message ?? body?.error ?? "Skej could not load this right now. Try again soon."
+    );
   }
 
   return (await response.json()) as T;
