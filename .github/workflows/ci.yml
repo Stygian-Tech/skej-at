@@ -77,7 +77,7 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Build gateway image
-        run: docker build -f services/skej-api/Dockerfile .
+        run: docker build -f services/skej-api/Dockerfile services/skej-api
 
   deploy-gateway:
     name: Deploy Gateway (Fly.io)

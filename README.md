@@ -27,7 +27,7 @@ swift run SkejAPI
 GitHub Actions runs:
 
 - `scripts/ci-js.sh` for Bun install, linting, typechecking, tests, and Next builds.
-- `scripts/ci-swift.sh` for Swift tests and release builds with warnings as errors.
+- `scripts/ci-swift.sh` for Swift tests and release builds.
 - A gateway Docker build when `services/skej-api` or deployment files change.
 
 Run the same checks locally:
@@ -39,6 +39,8 @@ bash scripts/ci.sh
 ## Fly Gateway
 
 The Swift gateway is configured for Fly in `services/skej-api/fly.toml`.
+The Dockerfile is service-local; in the Fly web UI, set the source/root directory
+to `services/skej-api`.
 
 Default app names:
 

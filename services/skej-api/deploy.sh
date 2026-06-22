@@ -1,11 +1,10 @@
 #!/usr/bin/env bash
-# Deploy the Skej gateway from the repo root using services/skej-api/fly.toml.
+# Deploy the Skej gateway from services/skej-api using its local fly.toml.
 #
 # Usage: bash services/skej-api/deploy.sh dev|main
 set -euo pipefail
 
 SERVICE_DIR="$(cd "$(dirname "$0")" && pwd)"
-ROOT="$(cd "$SERVICE_DIR/../.." && pwd)"
 BRANCH="${1:?usage: deploy.sh dev|main}"
 shift || true
 
@@ -27,7 +26,7 @@ DEPLOY_ARGS=(
   --env "PUBLIC_ORIGIN=$PUBLIC_ORIGIN_VALUE"
 )
 
-cd "$ROOT"
+cd "$SERVICE_DIR"
 
 if command -v flyctl >/dev/null 2>&1; then
   exec flyctl deploy "${DEPLOY_ARGS[@]}" "$@"
