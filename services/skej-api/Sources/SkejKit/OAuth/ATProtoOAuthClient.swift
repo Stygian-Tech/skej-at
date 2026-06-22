@@ -1,4 +1,4 @@
-import Crypto
+@preconcurrency import Crypto
 import Foundation
 #if canImport(FoundationNetworking)
 import FoundationNetworking
@@ -402,7 +402,7 @@ public enum HTTPClientError: Error, Equatable {
     case badStatus(Int, String, [String: String])
 }
 
-public struct DPoPKey: Sendable {
+public struct DPoPKey: @unchecked Sendable {
     private let privateKey: P256.Signing.PrivateKey
 
     public init() {
