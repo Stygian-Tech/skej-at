@@ -66,7 +66,7 @@ export function LandingPage() {
               </p>
             </div>
             <div className="max-w-xl rounded-[1.75rem] border border-border bg-card/85 p-3 shadow-[0_24px_70px_rgba(70,52,70,0.12)]">
-              <OAuthLoginForm defaultHandle="skej.demo" />
+              <OAuthLoginForm />
             </div>
             <div className="flex flex-wrap gap-2 text-sm font-black text-secondary-foreground">
               <span className="rounded-full border border-border bg-secondary px-3 py-1.5">

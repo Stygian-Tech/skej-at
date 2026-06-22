@@ -9,18 +9,21 @@ import { startOAuth } from "@/lib/api";
 
 interface OAuthLoginFormProps {
   compact?: boolean;
-  defaultHandle?: string;
 }
 
 export function OAuthLoginForm({
   compact = false,
-  defaultHandle = "",
 }: OAuthLoginFormProps) {
-  const [handle, setHandle] = React.useState(defaultHandle);
+  const [handle, setHandle] = React.useState("");
 
   function submit(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    window.location.href = startOAuth(handle || "skej.demo");
+    const normalizedHandle = handle.trim();
+    if (!normalizedHandle) {
+      setHandle("");
+      return;
+    }
+    window.location.href = startOAuth(normalizedHandle);
   }
 
   return (
@@ -33,6 +36,7 @@ export function OAuthLoginForm({
         inputMode="url"
         onChange={(event) => setHandle(event.target.value)}
         placeholder="you.bsky.social"
+        required
         value={handle}
       />
       <Button className={compact ? "sm:w-auto" : "sm:min-w-44"} type="submit">
