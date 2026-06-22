@@ -1,0 +1,113 @@
+name: CI
+
+on:
+  push:
+    branches: [main, dev]
+  pull_request:
+    branches: [main, dev]
+  workflow_dispatch:
+    inputs:
+      deploy_gateway:
+        description: Deploy Skej gateway to Fly after CI checks
+        required: true
+        type: boolean
+        default: false
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  changes:
+    name: Detect changed paths
+    runs-on: ubuntu-latest
+    outputs:
+      gateway: ${{ steps.filter.outputs.gateway }}
+      web: ${{ steps.filter.outputs.web }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Detect changed paths
+        id: filter
+        env:
+          GITHUB_EVENT_PULL_REQUEST_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: bash scripts/ci-detect-changes.sh
+
+  ci-js:
+    name: Web and lexicon checks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Bun
+        run: |
+          curl -fsSL https://bun.sh/install | bash -s "bun-v1.3.14"
+          echo "$HOME/.bun/bin" >> "$GITHUB_PATH"
+
+      - name: Run JS CI
+        run: bash scripts/ci-js.sh
+        env:
+          NEXT_TELEMETRY_DISABLED: "1"
+
+  ci-swift:
+    name: Gateway Swift checks
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Swift version
+        run: swift --version
+
+      - name: Run gateway CI
+        run: bash scripts/ci-swift.sh
+
+  docker-gateway:
+    name: Gateway Docker build
+    needs: [changes]
+    if: |
+      needs.changes.outputs.gateway == 'true' ||
+      (github.event_name == 'workflow_dispatch' && inputs.deploy_gateway)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build gateway image
+        run: docker build -f services/skej-api/Dockerfile .
+
+  deploy-gateway:
+    name: Deploy Gateway (Fly.io)
+    needs: [changes, ci-js, ci-swift, docker-gateway]
+    if: |
+      always() &&
+      needs.changes.result == 'success' &&
+      needs.ci-js.result == 'success' &&
+      needs.ci-swift.result == 'success' &&
+      (needs.docker-gateway.result == 'success' || needs.docker-gateway.result == 'skipped') &&
+      (
+        (
+          github.event_name == 'push' &&
+          (github.ref_name == 'main' || github.ref_name == 'dev') &&
+          needs.changes.outputs.gateway == 'true'
+        ) ||
+        (github.event_name == 'workflow_dispatch' && inputs.deploy_gateway)
+      )
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: superfly/flyctl-actions/setup-flyctl@v1
+
+      - name: Deploy gateway to Fly.io
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+          FLY_ORG: ${{ secrets.FLY_ORG }}
+          FLY_SKEJ_GATEWAY_APP_DEV: ${{ secrets.FLY_SKEJ_GATEWAY_APP_DEV }}
+          FLY_SKEJ_GATEWAY_APP_PROD: ${{ secrets.FLY_SKEJ_GATEWAY_APP_PROD }}
+          SKEJ_PUBLIC_ORIGIN_DEV: ${{ secrets.SKEJ_PUBLIC_ORIGIN_DEV }}
+          SKEJ_PUBLIC_ORIGIN_PROD: ${{ secrets.SKEJ_PUBLIC_ORIGIN_PROD }}
+        run: bash scripts/fly-deploy-gateway.sh "${{ github.ref_name }}"
