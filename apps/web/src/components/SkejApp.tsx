@@ -394,7 +394,9 @@ export function SkejApp() {
               <Button
                 size="sm"
                 onClick={() => {
-                  window.location.href = "/oauth/start?handle=skej.demo";
+                  document
+                    .getElementById("connect-pds")
+                    ?.scrollIntoView({ behavior: "smooth", block: "start" });
                 }}
               >
                 <LockKeyhole data-icon="inline-start" />
@@ -460,7 +462,7 @@ export function SkejApp() {
             ) : null}
 
             {!isAuthenticated && authStatus !== "loading" ? (
-              <Card className="overflow-hidden">
+              <Card className="overflow-hidden" id="connect-pds">
                 <CardHeader>
                   <CardTitle>Connect your PDS</CardTitle>
                   <CardDescription>
@@ -469,7 +471,7 @@ export function SkejApp() {
                   </CardDescription>
                 </CardHeader>
                 <CardContent className="flex flex-col gap-4">
-                  <OAuthLoginForm compact defaultHandle="skej.demo" />
+                  <OAuthLoginForm compact />
                 </CardContent>
               </Card>
             ) : null}
