@@ -85,7 +85,7 @@ export function validateComposerDraft(draft: ComposerDraft, now = new Date()): V
     if (!first?.reply) {
       issues.push({
         field: "reply",
-        message: "Reply mode requires a root and parent post reference.",
+        message: "Add the Bluesky post you want to reply to.",
       });
     }
   }
@@ -95,7 +95,7 @@ export function validateComposerDraft(draft: ComposerDraft, now = new Date()): V
     if (!first?.embed?.record) {
       issues.push({
         field: "quote",
-        message: "Quote mode requires a record reference.",
+        message: "Add the Bluesky post you want to quote.",
       });
     }
   }
@@ -141,4 +141,3 @@ export function localDatetimeValue(date: Date): string {
   const local = new Date(date.getTime() - offset * 60_000);
   return local.toISOString().slice(0, 16);
 }
-
