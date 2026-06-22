@@ -8,6 +8,47 @@ public protocol PDSClient: Sendable {
     func publishThread(did: String, record: SkejScheduleRecord) async throws -> PublishedPost
 }
 
+public struct SQLitePDSClient: PDSClient {
+    private let store: SQLiteStore
+
+    public init(store: SQLiteStore) {
+        self.store = store
+    }
+
+    public func writeSchedule(did: String, rkey: String, record: SkejScheduleRecord) async throws {
+        try await store.writeScheduleRecord(
+            did: did,
+            rkey: rkey,
+            record: record,
+            now: Timestamp.iso8601()
+        )
+    }
+
+    public func getSchedule(did: String, rkey: String) async throws -> SkejScheduleRecord? {
+        try await store.scheduleRecord(did: did, rkey: rkey)
+    }
+
+    public func listSchedules(did: String) async throws -> [String: SkejScheduleRecord] {
+        try await store.listScheduleRecords(did: did)
+    }
+
+    public func deleteSchedule(did: String, rkey: String) async throws {
+        try await store.deleteScheduleRecord(did: did, rkey: rkey)
+    }
+
+    public func publishThread(did: String, record: SkejScheduleRecord) async throws -> PublishedPost {
+        let suffix = stableSuffix(did: did, text: record.posts.map(\.text).joined(separator: "\n"))
+        return PublishedPost(
+            uri: "at://\(did)/app.bsky.feed.post/\(suffix)",
+            cid: "bafy\(suffix)"
+        )
+    }
+
+    private func stableSuffix(did: String, text: String) -> String {
+        "\(abs("\(did):\(text)".hashValue))"
+    }
+}
+
 public actor InMemoryPDSClient: PDSClient {
     private var schedules: [String: [String: SkejScheduleRecord]] = [:]
     private var shouldFailPublish = false

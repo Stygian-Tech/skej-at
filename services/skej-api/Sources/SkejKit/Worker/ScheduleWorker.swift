@@ -56,5 +56,14 @@ public enum Timestamp {
     public static func iso8601(_ date: Date = Date()) -> String {
         ISO8601DateFormatter().string(from: date)
     }
-}
 
+    public static func date(from string: String) -> Date? {
+        let formatter = ISO8601DateFormatter()
+        if let date = formatter.date(from: string) {
+            return date
+        }
+
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return formatter.date(from: string)
+    }
+}

@@ -12,9 +12,8 @@ struct SkejAPIApp {
         let services = SkejServices(
             config: config,
             store: store,
-            pdsClient: InMemoryPDSClient()
+            pdsClient: SQLitePDSClient(store: store)
         )
         try await SkejBootstrap.run(config: config, services: services, logger: logger)
     }
 }
-

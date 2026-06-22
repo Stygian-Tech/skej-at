@@ -65,6 +65,13 @@ public actor SQLiteStore {
             );
             CREATE INDEX IF NOT EXISTS scheduled_jobs_due_idx
                 ON scheduled_jobs (status, scheduled_for);
+            CREATE TABLE IF NOT EXISTS pds_schedule_records (
+                did TEXT NOT NULL,
+                rkey TEXT NOT NULL,
+                record_json TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                PRIMARY KEY (did, rkey)
+            );
             """
         )
     }
@@ -79,6 +86,33 @@ public actor SQLiteStore {
         try run(
             "INSERT OR REPLACE INTO oauth_states (state, handle, pkce_verifier, nonce, expires_at) VALUES (?, ?, ?, ?, ?)",
             [state, handle, pkceVerifier, nonce, expiresAt]
+        )
+    }
+
+    public func consumeOAuthState(state: String, now: String) throws -> OAuthStateRecord? {
+        let rows = try query(
+            """
+            SELECT state, handle, pkce_verifier, nonce, expires_at
+            FROM oauth_states
+            WHERE state = ? AND expires_at > ?
+            LIMIT 1
+            """,
+            [state, now]
+        )
+        try run("DELETE FROM oauth_states WHERE state = ?", [state])
+        guard let row = rows.first,
+              let state = row["state"],
+              let handle = row["handle"],
+              let pkceVerifier = row["pkce_verifier"],
+              let nonce = row["nonce"],
+              let expiresAt = row["expires_at"]
+        else { return nil }
+        return OAuthStateRecord(
+            state: state,
+            handle: handle,
+            pkceVerifier: pkceVerifier,
+            nonce: nonce,
+            expiresAt: expiresAt
         )
     }
 
@@ -101,6 +135,72 @@ public actor SQLiteStore {
         )
         guard let row = rows.first else { return nil }
         return Viewer(did: row["did"] ?? "", handle: row["handle"], displayName: row["handle"])
+    }
+
+    public func deleteWebSession(sessionID: String) throws {
+        try run("DELETE FROM web_sessions WHERE session_id = ?", [sessionID])
+    }
+
+    public func writeScheduleRecord(
+        did: String,
+        rkey: String,
+        record: SkejScheduleRecord,
+        now: String
+    ) throws {
+        let data = try encoder.encode(record)
+        guard let json = String(data: data, encoding: .utf8) else {
+            throw SQLiteStoreError.statement(message: "Could not encode schedule record")
+        }
+        try run(
+            """
+            INSERT INTO pds_schedule_records (did, rkey, record_json, updated_at)
+            VALUES (?, ?, ?, ?)
+            ON CONFLICT(did, rkey) DO UPDATE SET
+                record_json = excluded.record_json,
+                updated_at = excluded.updated_at
+            """,
+            [did, rkey, json, now]
+        )
+    }
+
+    public func scheduleRecord(did: String, rkey: String) throws -> SkejScheduleRecord? {
+        let rows = try query(
+            """
+            SELECT record_json
+            FROM pds_schedule_records
+            WHERE did = ? AND rkey = ?
+            LIMIT 1
+            """,
+            [did, rkey]
+        )
+        guard let json = rows.first?["record_json"],
+              let data = json.data(using: .utf8)
+        else { return nil }
+        return try decoder.decode(SkejScheduleRecord.self, from: data)
+    }
+
+    public func listScheduleRecords(did: String) throws -> [String: SkejScheduleRecord] {
+        let rows = try query(
+            """
+            SELECT rkey, record_json
+            FROM pds_schedule_records
+            WHERE did = ?
+            """,
+            [did]
+        )
+        var records: [String: SkejScheduleRecord] = [:]
+        for row in rows {
+            guard let rkey = row["rkey"],
+                  let json = row["record_json"],
+                  let data = json.data(using: .utf8)
+            else { continue }
+            records[rkey] = try decoder.decode(SkejScheduleRecord.self, from: data)
+        }
+        return records
+    }
+
+    public func deleteScheduleRecord(did: String, rkey: String) throws {
+        try run("DELETE FROM pds_schedule_records WHERE did = ? AND rkey = ?", [did, rkey])
     }
 
     public func upsertScheduleJob(_ job: ScheduledJob, now: String) throws {
@@ -286,6 +386,14 @@ public actor SQLiteStore {
         guard let message = sqlite3_errmsg(db) else { return "SQLite error" }
         return String(cString: message)
     }
+}
+
+public struct OAuthStateRecord: Equatable, Sendable {
+    public let state: String
+    public let handle: String
+    public let pkceVerifier: String
+    public let nonce: String
+    public let expiresAt: String
 }
 
 public enum SQLiteStoreError: Error, Equatable {

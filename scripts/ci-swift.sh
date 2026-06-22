@@ -15,13 +15,23 @@ fi
 
 MODE="${1:-all}"
 PACKAGE_PATH="services/skej-api"
+SWIFT_PACKAGE_FLAGS=()
+
+if [ "${SKEJ_DISABLE_SWIFTPM_SANDBOX:-}" = "1" ]; then
+  SWIFT_PACKAGE_FLAGS+=(--disable-sandbox)
+fi
 
 run_tests() {
-  swift test --package-path "$PACKAGE_PATH"
+  swift test ${SWIFT_PACKAGE_FLAGS[@]+"${SWIFT_PACKAGE_FLAGS[@]}"} --package-path "$PACKAGE_PATH"
 }
 
 run_build() {
-  swift build -c release --package-path "$PACKAGE_PATH"
+  if [ "${SKEJ_DISABLE_SWIFTPM_SANDBOX:-}" = "1" ] && [ -d "/Library/Developer/CommandLineTools" ]; then
+    DEVELOPER_DIR="/Library/Developer/CommandLineTools" \
+      swift build ${SWIFT_PACKAGE_FLAGS[@]+"${SWIFT_PACKAGE_FLAGS[@]}"} -c release --package-path "$PACKAGE_PATH"
+  else
+    swift build ${SWIFT_PACKAGE_FLAGS[@]+"${SWIFT_PACKAGE_FLAGS[@]}"} -c release --package-path "$PACKAGE_PATH"
+  fi
 }
 
 case "$MODE" in

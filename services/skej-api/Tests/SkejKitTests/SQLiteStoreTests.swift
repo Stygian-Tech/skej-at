@@ -28,4 +28,25 @@ struct SQLiteStoreTests {
         #expect(updated?.status == .publishing)
         #expect(updated?.attempts == 1)
     }
+
+    @Test func scheduleRecordsPersistInSQLite() async throws {
+        let store = try SQLiteStore(path: ":memory:")
+        try await store.migrate()
+        let record = makeRecord(scheduledFor: "2026-01-01T12:00:00Z")
+
+        try await store.writeScheduleRecord(
+            did: "did:plc:test",
+            rkey: "3lrecord",
+            record: record,
+            now: "2026-01-01T09:00:00Z"
+        )
+
+        let fetched = try await store.scheduleRecord(did: "did:plc:test", rkey: "3lrecord")
+        #expect(fetched == record)
+        let listed = try await store.listScheduleRecords(did: "did:plc:test")
+        #expect(listed["3lrecord"] == record)
+
+        try await store.deleteScheduleRecord(did: "did:plc:test", rkey: "3lrecord")
+        #expect(try await store.scheduleRecord(did: "did:plc:test", rkey: "3lrecord") == nil)
+    }
 }
