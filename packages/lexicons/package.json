@@ -1,0 +1,19 @@
+{
+  "name": "@stygian/skej-lexicons",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    "./at.skej.schedule.json": "./at.skej.schedule.json"
+  },
+  "scripts": {
+    "build": "bun test",
+    "lint": "bun test",
+    "typecheck": "bun test",
+    "test": "bun test"
+  },
+  "devDependencies": {
+    "@types/bun": "^1.3.4"
+  }
+}
+

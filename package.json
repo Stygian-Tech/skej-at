@@ -1,0 +1,22 @@
+{
+  "name": "skej-at",
+  "private": true,
+  "workspaces": ["apps/*", "packages/*", "services/*"],
+  "scripts": {
+    "build": "bun run build:web && bun run build:swift",
+    "build:web": "turbo build",
+    "build:swift": "env DEVELOPER_DIR=/Applications/Xcode-beta.app/Contents/Developer swift build --package-path services/skej-api",
+    "dev": "turbo dev",
+    "lint": "turbo lint",
+    "typecheck": "turbo typecheck",
+    "test": "bun run test:web && bun run test:swift",
+    "test:web": "turbo test",
+    "test:swift": "env DEVELOPER_DIR=/Applications/Xcode-beta.app/Contents/Developer swift test --package-path services/skej-api",
+    "verify": "bun run lint && bun run typecheck && bun run test && bun run build",
+    "clean": "turbo clean"
+  },
+  "devDependencies": {
+    "turbo": "latest"
+  },
+  "packageManager": "bun@1.3.14"
+}

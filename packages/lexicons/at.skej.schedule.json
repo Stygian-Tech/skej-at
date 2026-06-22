@@ -1,0 +1,85 @@
+{
+  "lexicon": 1,
+  "id": "at.skej.schedule",
+  "defs": {
+    "main": {
+      "type": "record",
+      "description": "A public, user-owned scheduled Bluesky post or thread stored in the user's PDS until Skej publishes it.",
+      "key": "tid",
+      "record": {
+        "type": "object",
+        "required": ["scheduledFor", "createdAt", "updatedAt", "status", "posts"],
+        "properties": {
+          "scheduledFor": {
+            "type": "string",
+            "format": "datetime",
+            "description": "When Skej should publish the post."
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "datetime"
+          },
+          "updatedAt": {
+            "type": "string",
+            "format": "datetime"
+          },
+          "status": {
+            "type": "string",
+            "enum": ["scheduled", "publishing", "published", "failed", "cancelled"]
+          },
+          "lastError": {
+            "type": "string",
+            "maxLength": 8192,
+            "description": "Last worker failure visible to the user for recovery."
+          },
+          "posts": {
+            "type": "array",
+            "minLength": 1,
+            "maxLength": 25,
+            "items": { "type": "ref", "ref": "#postPlan" }
+          }
+        }
+      }
+    },
+    "postPlan": {
+      "type": "object",
+      "description": "A draft post payload mirroring supported app.bsky.feed.post fields. The worker sets app.bsky.feed.post createdAt at publish time.",
+      "required": ["text"],
+      "properties": {
+        "text": {
+          "type": "string",
+          "maxGraphemes": 300,
+          "maxLength": 3000
+        },
+        "facets": {
+          "type": "array",
+          "items": { "type": "unknown" }
+        },
+        "reply": {
+          "type": "unknown",
+          "description": "app.bsky.feed.post reply reference."
+        },
+        "embed": {
+          "type": "unknown",
+          "description": "Supported app.bsky.embed images, external, record, or recordWithMedia payload."
+        },
+        "langs": {
+          "type": "array",
+          "items": { "type": "string", "maxLength": 35 },
+          "maxLength": 3
+        },
+        "labels": {
+          "type": "array",
+          "items": { "type": "string", "maxLength": 128 },
+          "maxLength": 16
+        },
+        "tags": {
+          "type": "array",
+          "items": { "type": "string", "maxLength": 640 },
+          "maxLength": 8
+        }
+      }
+    }
+  }
+}
+

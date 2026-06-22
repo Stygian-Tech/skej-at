@@ -1,0 +1,16 @@
+.DS_Store
+node_modules
+.turbo
+.next
+dist
+coverage
+*.tsbuildinfo
+.env
+.env.*
+!.env.example
+.build
+data
+*.sqlite
+*.sqlite-shm
+*.sqlite-wal
+*.xcresult
