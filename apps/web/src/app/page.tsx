@@ -1,6 +1,5 @@
-import { SkejApp } from "@/components/SkejApp";
+import { LandingPage } from "@/components/LandingPage";
 
 export default function Home() {
-  return <SkejApp />;
+  return <LandingPage />;
 }
-

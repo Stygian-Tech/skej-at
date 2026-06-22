@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, mock } from "bun:test";
 
-import { createSchedule, startOAuth } from "@/lib/api";
+import { createSchedule, logout, startOAuth } from "@/lib/api";
 
 const originalFetch = globalThis.fetch;
 
@@ -38,6 +38,21 @@ describe("api client", () => {
     });
 
     expect(result.rkey).toBe("3l6test");
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("posts logout", async () => {
+    const fetchMock = mock(async (_input: RequestInfo | URL, init?: RequestInit) => {
+      expect(init?.method).toBe("POST");
+      return new Response(JSON.stringify({ ok: true }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      });
+    });
+    globalThis.fetch = fetchMock as unknown as typeof fetch;
+
+    await logout();
+
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 });

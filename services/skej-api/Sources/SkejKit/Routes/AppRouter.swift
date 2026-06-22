@@ -21,11 +21,12 @@ public func buildRouter(services: SkejServices) -> Router<BasicRequestContext> {
     }
 
     router.get("oauth/start") { request, _ in
-        let handle = request.uri.queryParameters.get("handle") ?? "skej.demo"
+        let handle = (request.uri.queryParameters.get("handle") ?? "skej.demo")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
         let state = randomToken()
         try await services.store.createOAuthState(
             state: state,
-            handle: handle,
+            handle: handle.isEmpty ? "skej.demo" : handle,
             pkceVerifier: randomToken(),
             nonce: randomToken(),
             expiresAt: Timestamp.iso8601(Date().addingTimeInterval(600))
@@ -36,19 +37,26 @@ public func buildRouter(services: SkejServices) -> Router<BasicRequestContext> {
     }
 
     router.get("oauth/callback") { request, _ in
-        let state = request.uri.queryParameters.get("state") ?? randomToken()
+        guard let state = request.uri.queryParameters.get("state") else {
+            throw APIError(status: .badRequest, code: "missing_state", message: "OAuth state is required")
+        }
+        let now = Timestamp.iso8601()
+        guard let oauthState = try await services.store.consumeOAuthState(state: state, now: now) else {
+            throw APIError(status: .badRequest, code: "invalid_state", message: "OAuth state expired or was already used")
+        }
         let session = randomToken()
-        let handle = "skej.demo"
+        let handle = oauthState.handle
         try await services.store.createWebSession(
             sessionID: session,
-            did: "did:plc:\(state.prefix(12))",
+            did: localDID(for: handle),
             handle: handle,
             expiresAt: Timestamp.iso8601(Date().addingTimeInterval(60 * 60 * 24 * 30))
         )
         var headers = HTTPFields()
-        headers[.location] = "/"
+        headers[.location] = "/app"
+        let secure = services.config.environment == .prod ? "; Secure" : ""
         headers[HTTPField.Name("Set-Cookie")!] =
-            "skej_session=\(session); Path=/; HttpOnly; SameSite=Lax"
+            "skej_session=\(session); Path=/; HttpOnly; SameSite=Lax; Max-Age=2592000\(secure)"
         return Response(status: .found, headers: headers)
     }
 
@@ -59,7 +67,10 @@ public func buildRouter(services: SkejServices) -> Router<BasicRequestContext> {
         return try jsonResponse(viewer)
     }
 
-    v1.post("logout") { _, _ in
+    v1.post("logout") { request, _ in
+        if let sessionID = cookie(named: "skej_session", in: request.headers[.cookie] ?? "") {
+            try await services.store.deleteWebSession(sessionID: sessionID)
+        }
         var headers = HTTPFields()
         headers[HTTPField.Name("Set-Cookie")!] =
             "skej_session=deleted; Path=/; HttpOnly; SameSite=Lax; Max-Age=0"
@@ -189,7 +200,7 @@ private func validate(record: SkejScheduleRecord) throws {
     guard !record.posts.isEmpty else {
         throw APIError(status: .badRequest, code: "empty_posts", message: "Add at least one post")
     }
-    guard ISO8601DateFormatter().date(from: record.scheduledFor) != nil else {
+    guard Timestamp.date(from: record.scheduledFor) != nil else {
         throw APIError(status: .badRequest, code: "invalid_schedule", message: "Invalid scheduledFor")
     }
 }
@@ -218,6 +229,12 @@ private func randomToken() -> String {
         .replacingOccurrences(of: "+", with: "-")
         .replacingOccurrences(of: "/", with: "_")
         .replacingOccurrences(of: "=", with: "")
+}
+
+private func localDID(for handle: String) -> String {
+    let digest = SHA256.hash(data: Data(handle.lowercased().utf8))
+    let suffix = digest.prefix(12).map { String(format: "%02x", $0) }.joined()
+    return "did:plc:\(suffix)"
 }
 
 private extension FixedWidthInteger {
