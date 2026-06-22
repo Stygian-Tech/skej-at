@@ -1,4 +1,4 @@
-# Deploy from repo root through CI:
+# Deploy from the service directory through CI:
 #   bash scripts/fly-deploy-gateway.sh dev
 # Or locally:
 #   bash services/skej-api/deploy.sh dev
@@ -8,7 +8,6 @@ primary_region = 'ams'
 
 [build]
   dockerfile = 'Dockerfile'
-  context = '../..'
 
 [deploy]
   wait_timeout = '10m0s'
