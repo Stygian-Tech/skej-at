@@ -41,7 +41,7 @@ export function OAuthLoginForm({
       />
       <Button className={compact ? "sm:w-auto" : "sm:min-w-44"} type="submit">
         {compact ? <LockKeyhole data-icon="inline-start" /> : <Cloud data-icon="inline-start" />}
-        Connect PDS
+        Connect Bluesky
       </Button>
     </form>
   );

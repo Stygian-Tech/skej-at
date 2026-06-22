@@ -121,11 +121,13 @@ public struct Viewer: Codable, Equatable, Sendable {
     public let did: String
     public let handle: String?
     public let displayName: String?
+    public let avatar: String?
 
-    public init(did: String, handle: String? = nil, displayName: String? = nil) {
+    public init(did: String, handle: String? = nil, displayName: String? = nil, avatar: String? = nil) {
         self.did = did
         self.handle = handle
         self.displayName = displayName
+        self.avatar = avatar
     }
 }
 

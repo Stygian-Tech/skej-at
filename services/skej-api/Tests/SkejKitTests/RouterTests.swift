@@ -84,8 +84,8 @@ struct RouterTests {
             try await client.execute(uri: "/oauth/client-metadata.json", method: .get) { response in
                 #expect(response.status == .ok)
                 let body = String(buffer: response.body)
-                #expect(body.contains("repo:at.skej.schedule"))
-                #expect(body.contains("private_key_jwt"))
+                #expect(body.contains("transition:generic"))
+                #expect(body.contains("\"token_endpoint_auth_method\":\"none\""))
             }
         }
     }
@@ -123,6 +123,37 @@ struct RouterTests {
 
             try await client.execute(uri: "/v1/me", method: .get, headers: headers) { response in
                 #expect(response.status == .unauthorized)
+            }
+        }
+    }
+
+    @Test func failedJobsStayVisibleWhenPDSRecordIsMissing() async throws {
+        let services = try await makeTestServices()
+        try await services.store.upsertScheduleJob(
+            ScheduledJob(
+                did: "did:plc:test",
+                rkey: "3lmissing",
+                scheduledFor: "2026-01-01T11:00:00Z",
+                status: .failed,
+                attempts: 2,
+                lastError: "PDS rejected scheduled record",
+                publishedUri: nil,
+                publishedCid: nil
+            ),
+            now: "2026-01-01T11:01:00Z"
+        )
+        let app = Application(router: buildRouter(services: services))
+
+        try await app.test(.router) { client in
+            try await client.execute(
+                uri: "/v1/schedules",
+                method: .get,
+                headers: didHeaders("did:plc:test")
+            ) { response in
+                #expect(response.status == .ok)
+                let body = String(buffer: response.body)
+                #expect(body.contains("\"status\":\"failed\""))
+                #expect(body.contains("PDS rejected scheduled record"))
             }
         }
     }

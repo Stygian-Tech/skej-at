@@ -9,7 +9,7 @@ const buttonVariants = cva(
     variants: {
       variant: {
         default:
-          "bg-primary text-primary-foreground shadow-[0_12px_28px_rgba(255,79,109,0.24)] hover:bg-primary/90",
+          "bg-primary text-primary-foreground shadow-[0_8px_18px_rgba(255,79,109,0.14)] hover:bg-primary/90",
         secondary:
           "bg-secondary text-secondary-foreground hover:bg-secondary/80",
         outline:
@@ -17,7 +17,7 @@ const buttonVariants = cva(
         ghost:
           "text-foreground hover:bg-muted",
         sunny:
-          "bg-accent text-accent-foreground shadow-[0_12px_28px_rgba(255,213,64,0.18)] hover:bg-accent/90",
+          "bg-accent text-accent-foreground shadow-[0_8px_18px_rgba(255,213,64,0.1)] hover:bg-accent/90",
       },
       size: {
         default: "h-11",
@@ -54,4 +54,3 @@ export function Button({
 }
 
 export { buttonVariants };
-

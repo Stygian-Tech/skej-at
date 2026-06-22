@@ -35,6 +35,10 @@ public actor SQLiteStore {
                 handle TEXT NOT NULL,
                 pkce_verifier TEXT NOT NULL,
                 nonce TEXT NOT NULL,
+                auth_server TEXT,
+                token_endpoint TEXT,
+                pds_endpoint TEXT,
+                dpop_key_json TEXT,
                 expires_at TEXT NOT NULL
             );
             CREATE TABLE IF NOT EXISTS oauth_sessions (
@@ -48,6 +52,8 @@ public actor SQLiteStore {
                 session_id TEXT PRIMARY KEY,
                 did TEXT NOT NULL,
                 handle TEXT,
+                display_name TEXT,
+                avatar TEXT,
                 expires_at TEXT NOT NULL
             );
             CREATE TABLE IF NOT EXISTS scheduled_jobs (
@@ -74,6 +80,12 @@ public actor SQLiteStore {
             );
             """
         )
+        try addColumnIfMissing(table: "oauth_states", column: "auth_server", definition: "TEXT")
+        try addColumnIfMissing(table: "oauth_states", column: "token_endpoint", definition: "TEXT")
+        try addColumnIfMissing(table: "oauth_states", column: "pds_endpoint", definition: "TEXT")
+        try addColumnIfMissing(table: "oauth_states", column: "dpop_key_json", definition: "TEXT")
+        try addColumnIfMissing(table: "web_sessions", column: "display_name", definition: "TEXT")
+        try addColumnIfMissing(table: "web_sessions", column: "avatar", definition: "TEXT")
     }
 
     public func createOAuthState(
@@ -81,18 +93,26 @@ public actor SQLiteStore {
         handle: String,
         pkceVerifier: String,
         nonce: String,
+        authServer: String? = nil,
+        tokenEndpoint: String? = nil,
+        pdsEndpoint: String? = nil,
+        dpopKeyJSON: String? = nil,
         expiresAt: String
     ) throws {
         try run(
-            "INSERT OR REPLACE INTO oauth_states (state, handle, pkce_verifier, nonce, expires_at) VALUES (?, ?, ?, ?, ?)",
-            [state, handle, pkceVerifier, nonce, expiresAt]
+            """
+            INSERT OR REPLACE INTO oauth_states
+                (state, handle, pkce_verifier, nonce, auth_server, token_endpoint, pds_endpoint, dpop_key_json, expires_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            [state, handle, pkceVerifier, nonce, authServer, tokenEndpoint, pdsEndpoint, dpopKeyJSON, expiresAt]
         )
     }
 
     public func consumeOAuthState(state: String, now: String) throws -> OAuthStateRecord? {
         let rows = try query(
             """
-            SELECT state, handle, pkce_verifier, nonce, expires_at
+            SELECT state, handle, pkce_verifier, nonce, auth_server, token_endpoint, pds_endpoint, dpop_key_json, expires_at
             FROM oauth_states
             WHERE state = ? AND expires_at > ?
             LIMIT 1
@@ -112,6 +132,10 @@ public actor SQLiteStore {
             handle: handle,
             pkceVerifier: pkceVerifier,
             nonce: nonce,
+            authServer: row["auth_server"],
+            tokenEndpoint: row["token_endpoint"],
+            pdsEndpoint: row["pds_endpoint"],
+            dpopKeyJSON: row["dpop_key_json"],
             expiresAt: expiresAt
         )
     }
@@ -120,25 +144,65 @@ public actor SQLiteStore {
         sessionID: String,
         did: String,
         handle: String?,
+        displayName: String?,
+        avatar: String?,
         expiresAt: String
     ) throws {
         try run(
-            "INSERT OR REPLACE INTO web_sessions (session_id, did, handle, expires_at) VALUES (?, ?, ?, ?)",
-            [sessionID, did, handle, expiresAt]
+            """
+            INSERT OR REPLACE INTO web_sessions
+                (session_id, did, handle, display_name, avatar, expires_at)
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            [sessionID, did, handle, displayName, avatar, expiresAt]
         )
     }
 
     public func viewer(forSessionID sessionID: String, now: String) throws -> Viewer? {
         let rows = try query(
-            "SELECT did, handle FROM web_sessions WHERE session_id = ? AND expires_at > ? LIMIT 1",
+            "SELECT did, handle, display_name, avatar FROM web_sessions WHERE session_id = ? AND expires_at > ? LIMIT 1",
             [sessionID, now]
         )
         guard let row = rows.first else { return nil }
-        return Viewer(did: row["did"] ?? "", handle: row["handle"], displayName: row["handle"])
+        return Viewer(
+            did: row["did"] ?? "",
+            handle: row["handle"],
+            displayName: row["display_name"],
+            avatar: row["avatar"]
+        )
     }
 
     public func deleteWebSession(sessionID: String) throws {
         try run("DELETE FROM web_sessions WHERE session_id = ?", [sessionID])
+    }
+
+    public func createOAuthSession(_ session: OAuthSessionRecord, now: String) throws {
+        try run(
+            """
+            INSERT OR REPLACE INTO oauth_sessions
+                (did, handle, token_json, dpop_key_json, updated_at)
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            [session.did, session.handle, session.tokenJSON, session.dpopKeyJSON, now]
+        )
+    }
+
+    public func oauthSession(did: String) throws -> OAuthSessionRecord? {
+        let rows = try query(
+            "SELECT did, handle, token_json, dpop_key_json FROM oauth_sessions WHERE did = ? LIMIT 1",
+            [did]
+        )
+        guard let row = rows.first,
+              let did = row["did"],
+              let tokenJSON = row["token_json"],
+              let dpopKeyJSON = row["dpop_key_json"]
+        else { return nil }
+        return OAuthSessionRecord(
+            did: did,
+            handle: row["handle"],
+            tokenJSON: tokenJSON,
+            dpopKeyJSON: dpopKeyJSON
+        )
     }
 
     public func writeScheduleRecord(
@@ -386,6 +450,12 @@ public actor SQLiteStore {
         guard let message = sqlite3_errmsg(db) else { return "SQLite error" }
         return String(cString: message)
     }
+
+    private func addColumnIfMissing(table: String, column: String, definition: String) throws {
+        let columns = try query("PRAGMA table_info(\(table))", [])
+        guard !columns.contains(where: { $0["name"] == column }) else { return }
+        try exec("ALTER TABLE \(table) ADD COLUMN \(column) \(definition)")
+    }
 }
 
 public struct OAuthStateRecord: Equatable, Sendable {
@@ -393,7 +463,25 @@ public struct OAuthStateRecord: Equatable, Sendable {
     public let handle: String
     public let pkceVerifier: String
     public let nonce: String
+    public let authServer: String?
+    public let tokenEndpoint: String?
+    public let pdsEndpoint: String?
+    public let dpopKeyJSON: String?
     public let expiresAt: String
+}
+
+public struct OAuthSessionRecord: Equatable, Sendable {
+    public let did: String
+    public let handle: String?
+    public let tokenJSON: String
+    public let dpopKeyJSON: String
+
+    public init(did: String, handle: String?, tokenJSON: String, dpopKeyJSON: String) {
+        self.did = did
+        self.handle = handle
+        self.tokenJSON = tokenJSON
+        self.dpopKeyJSON = dpopKeyJSON
+    }
 }
 
 public enum SQLiteStoreError: Error, Equatable {
