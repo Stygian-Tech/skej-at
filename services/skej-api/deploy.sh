@@ -23,6 +23,7 @@ DEPLOY_ARGS=(
   --app "$APP"
   --remote-only
   --env "APP_ENV=$APP_ENV_VALUE"
+  --env "SKEJ_PUBLIC_ORIGIN=$PUBLIC_ORIGIN_VALUE"
   --env "PUBLIC_ORIGIN=$PUBLIC_ORIGIN_VALUE"
 )
 
