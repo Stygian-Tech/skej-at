@@ -20,7 +20,7 @@ struct AppConfigTests {
         #expect(config.environment == .dev)
         #expect(config.port == 9000)
         #expect(config.publicOrigin == "https://testing.skej.at")
-        #expect(config.sqlitePath == "data/dev.sqlite")
+        #expect(config.sqlitePath == "/var/lib/skej-api/data/skej.sqlite")
         #expect(config.workerEnabled == false)
         #expect(config.workerIntervalSeconds == 45)
         #expect(config.liveATProtoEnabled == false)
@@ -52,5 +52,17 @@ struct AppConfigTests {
         )
 
         #expect(config.publicOrigin == "https://legacy.example")
+    }
+
+    @Test func hostedEnvironmentsUseMountedSQLitePathWhenConfiguredPathIsRelative() {
+        let config = AppConfig.load(
+            environment: [:],
+            dotenv: [
+                "APP_ENV": "dev",
+                "SKEJ_SQLITE_PATH": "data/skej.sqlite",
+            ]
+        )
+
+        #expect(config.sqlitePath == "/var/lib/skej-api/data/skej.sqlite")
     }
 }

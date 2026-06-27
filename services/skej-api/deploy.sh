@@ -25,6 +25,7 @@ DEPLOY_ARGS=(
   --env "APP_ENV=$APP_ENV_VALUE"
   --env "SKEJ_PUBLIC_ORIGIN=$PUBLIC_ORIGIN_VALUE"
   --env "PUBLIC_ORIGIN=$PUBLIC_ORIGIN_VALUE"
+  --env "SKEJ_SQLITE_PATH=/var/lib/skej-api/data/skej.sqlite"
 )
 
 cd "$SERVICE_DIR"

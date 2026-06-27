@@ -50,7 +50,7 @@ public struct AppConfig: Sendable {
         }()
         let port = Int(env["PORT"] ?? "8080") ?? 8080
         let origin = env["SKEJ_PUBLIC_ORIGIN"] ?? env["PUBLIC_ORIGIN"] ?? "http://127.0.0.1:\(port)"
-        let sqlitePath = env["SKEJ_SQLITE_PATH"] ?? "data/skej.sqlite"
+        let sqlitePath = normalizedSQLitePath(env["SKEJ_SQLITE_PATH"], environment: appEnv)
         let workerEnabled = !["0", "false", "no"].contains((env["SKEJ_WORKER_ENABLED"] ?? "true").lowercased())
         let interval = UInt64(env["SKEJ_WORKER_INTERVAL_SECONDS"] ?? "30") ?? 30
         let liveATProtoDefault = appEnv == .dev || appEnv == .prod
@@ -116,5 +116,30 @@ public struct AppConfig: Sendable {
         }
 
         return (String(key), value)
+    }
+
+    private static func normalizedSQLitePath(_ configuredPath: String?, environment: AppEnvironment) -> String {
+        let hostedDefault = "/var/lib/skej-api/data/skej.sqlite"
+        let localDefault = "data/skej.sqlite"
+        let fallback = switch environment {
+        case .dev, .prod:
+            hostedDefault
+        case .local, .test:
+            localDefault
+        }
+        guard let configuredPath, !configuredPath.isEmpty else {
+            return fallback
+        }
+
+        if configuredPath == ":memory:" || configuredPath.starts(with: "/") {
+            return configuredPath
+        }
+
+        switch environment {
+        case .dev, .prod:
+            return hostedDefault
+        case .local, .test:
+            return configuredPath
+        }
     }
 }
