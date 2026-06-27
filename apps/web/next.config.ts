@@ -6,9 +6,13 @@ const hostedApiBase = "https://skej-at-prod-gateway.fly.dev";
 const apiBase =
   process.env.SKEJ_API_URL ??
   (process.env.NODE_ENV === "development" ? localApiBase : hostedApiBase);
+const appEnv = process.env.NEXT_PUBLIC_APP_ENV ?? process.env.APP_ENV ?? "local";
 
 const nextConfig: NextConfig = {
   allowedDevOrigins: ["127.0.0.1"],
+  env: {
+    NEXT_PUBLIC_APP_ENV: appEnv,
+  },
   turbopack: {
     root: path.resolve(process.cwd(), "../.."),
   },

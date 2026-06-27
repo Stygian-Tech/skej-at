@@ -38,3 +38,27 @@ public enum JSONValue: Codable, Equatable, Sendable {
     }
 }
 
+public extension Encodable {
+    func skejJSONValue() throws -> JSONValue {
+        let data = try JSONEncoder().encode(self)
+        let object = try JSONSerialization.jsonObject(with: data)
+        return try makeJSONValue(from: object)
+    }
+}
+
+public func makeJSONValue(from object: Any) throws -> JSONValue {
+    switch object {
+    case let value as String:
+        return .string(value)
+    case let value as Bool:
+        return .bool(value)
+    case let value as NSNumber:
+        return .number(value.doubleValue)
+    case let value as [Any]:
+        return .array(try value.map(makeJSONValue(from:)))
+    case let value as [String: Any]:
+        return .object(try value.mapValues(makeJSONValue(from:)))
+    default:
+        return .null
+    }
+}

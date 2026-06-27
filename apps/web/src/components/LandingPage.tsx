@@ -31,7 +31,7 @@ export function LandingPage() {
   return (
     <main className="min-h-dvh overflow-hidden px-4 pb-16 pt-4 text-foreground sm:px-6 lg:px-8">
       <div className="mx-auto flex w-full max-w-7xl flex-col gap-12">
-        <header className="flex items-center justify-between gap-3 rounded-[2rem] border border-border bg-card/80 px-4 py-3 shadow-[0_14px_38px_rgba(35,31,32,0.08)] backdrop-blur">
+        <header className="sticky top-11 z-40 flex items-center justify-between gap-3 rounded-[2rem] border border-border bg-card/95 px-4 py-3 shadow-[0_14px_38px_rgba(35,31,32,0.08)] backdrop-blur">
           <Link className="flex items-center gap-3" href="/">
             <SkejLogoMark />
             <div className="flex flex-col">

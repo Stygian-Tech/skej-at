@@ -11,7 +11,7 @@ public struct ATProtoPDSClient: PDSClient {
         self.http = http
     }
 
-    public func writeSchedule(did: String, rkey: String, record: SkejScheduleRecord) async throws {
+    public func writeRecord<Value: Codable & Sendable>(did: String, collection: String, rkey: String, record: Value) async throws {
         let session = try await authenticatedSession(did: did)
         try await xrpc(
             session: session,
@@ -19,40 +19,70 @@ public struct ATProtoPDSClient: PDSClient {
             path: "com.atproto.repo.putRecord",
             body: [
                 "repo": .string(did),
-                "collection": .string("at.skej.schedule"),
+                "collection": .string(collection),
                 "rkey": .string(rkey),
                 "validate": .bool(false),
-                "record": try record.jsonValue(),
+                "record": try record.skejJSONValue(),
             ]
         )
-        try await store.writeScheduleRecord(did: did, rkey: rkey, record: record, now: Timestamp.iso8601())
+        try await store.writeProtocolRecord(
+            did: did,
+            collection: collection,
+            rkey: rkey,
+            record: record,
+            now: Timestamp.iso8601()
+        )
     }
 
-    public func getSchedule(did: String, rkey: String) async throws -> SkejScheduleRecord? {
+    public func getRecord<Value: Codable & Sendable>(did: String, collection: String, rkey: String, as type: Value.Type) async throws -> Value? {
         let session = try await authenticatedSession(did: did)
-        let url = "\(session.token.pdsEndpoint)/xrpc/com.atproto.repo.getRecord?repo=\(urlEncode(did))&collection=at.skej.schedule&rkey=\(urlEncode(rkey))"
+        let url = "\(session.token.pdsEndpoint)/xrpc/com.atproto.repo.getRecord?repo=\(urlEncode(did))&collection=\(urlEncode(collection))&rkey=\(urlEncode(rkey))"
         let data = try await xrpcData(session: session, method: "GET", url: url, body: nil)
-        let response = try JSONDecoder().decode(GetRecordResponse<SkejScheduleRecord>.self, from: data)
-        try await store.writeScheduleRecord(did: did, rkey: rkey, record: response.value, now: Timestamp.iso8601())
+        let response = try JSONDecoder().decode(GetRecordResponse<Value>.self, from: data)
+        try await store.writeProtocolRecord(
+            did: did,
+            collection: collection,
+            rkey: rkey,
+            record: response.value,
+            now: Timestamp.iso8601()
+        )
         return response.value
     }
 
-    public func listSchedules(did: String) async throws -> [String: SkejScheduleRecord] {
+    public func listRecords<Value: Codable & Sendable>(did: String, collection: String, as type: Value.Type) async throws -> [String: Value] {
         let session = try await authenticatedSession(did: did)
-        let url = "\(session.token.pdsEndpoint)/xrpc/com.atproto.repo.listRecords?repo=\(urlEncode(did))&collection=at.skej.schedule&limit=100"
+        let url = "\(session.token.pdsEndpoint)/xrpc/com.atproto.repo.listRecords?repo=\(urlEncode(did))&collection=\(urlEncode(collection))&limit=100"
         do {
             let data = try await xrpcData(session: session, method: "GET", url: url, body: nil)
-            let response = try JSONDecoder().decode(ListRecordsResponse<SkejScheduleRecord>.self, from: data)
-            var records: [String: SkejScheduleRecord] = [:]
+            let response = try JSONDecoder().decode(ListRecordsResponse<Value>.self, from: data)
+            var records: [String: Value] = [:]
             for record in response.records {
                 guard let rkey = record.uri.split(separator: "/").last.map(String.init) else { continue }
                 records[rkey] = record.value
-                try await store.writeScheduleRecord(did: did, rkey: rkey, record: record.value, now: Timestamp.iso8601())
+                try await store.writeProtocolRecord(
+                    did: did,
+                    collection: collection,
+                    rkey: rkey,
+                    record: record.value,
+                    now: Timestamp.iso8601()
+                )
             }
             return records
         } catch {
-            return try await store.listScheduleRecords(did: did)
+            return try await store.listProtocolRecords(did: did, collection: collection, as: type)
         }
+    }
+
+    public func writeSchedule(did: String, rkey: String, record: SkejScheduleRecord) async throws {
+        try await writeRecord(did: did, collection: "at.skej.schedule", rkey: rkey, record: record)
+    }
+
+    public func getSchedule(did: String, rkey: String) async throws -> SkejScheduleRecord? {
+        try await getRecord(did: did, collection: "at.skej.schedule", rkey: rkey, as: SkejScheduleRecord.self)
+    }
+
+    public func listSchedules(did: String) async throws -> [String: SkejScheduleRecord] {
+        try await listRecords(did: did, collection: "at.skej.schedule", as: SkejScheduleRecord.self)
     }
 
     public func deleteSchedule(did: String, rkey: String) async throws {
@@ -72,41 +102,86 @@ public struct ATProtoPDSClient: PDSClient {
 
     public func publishThread(did: String, record: SkejScheduleRecord) async throws -> PublishedPost {
         let session = try await authenticatedSession(did: did)
-        var last: PublishedPost?
-        var parent: JSONValue?
-        var root: JSONValue?
+        let recordValue: JSONValue
+        if let shadowRecord = record.shadowRecord {
+            recordValue = shadowRecord
+        } else if let plan = record.posts.first {
+            recordValue = .object(try plan.feedPostValue(createdAt: Timestamp.iso8601()))
+        } else {
+            throw PDSClientError.publishFailed("No record payload to publish")
+        }
+        let responseData = try await xrpc(
+            session: session,
+            method: "POST",
+            path: "com.atproto.repo.putRecord",
+            body: [
+                "repo": .string(did),
+                "collection": .string(record.recordType),
+                "rkey": .string(record.publishRkey),
+                "validate": .bool(false),
+                "record": recordValue,
+            ]
+        )
+        let created = try JSONDecoder().decode(CreateRecordResponse.self, from: responseData)
+        return PublishedPost(uri: created.uri, cid: created.cid)
+    }
 
-        for plan in record.posts {
-            var post = try plan.feedPostValue(createdAt: Timestamp.iso8601())
-            if let parent, let root {
-                post["reply"] = .object(["root": root, "parent": parent])
-            }
-            let responseData = try await xrpc(
-                session: session,
-                method: "POST",
-                path: "com.atproto.repo.createRecord",
-                body: [
-                    "repo": .string(did),
-                    "collection": .string("app.bsky.feed.post"),
-                    "record": .object(post),
-                ]
+    public func getBrandProfile(did: String) async throws -> BrandProfile {
+        if let account = try await store.managedAccount(did: did) {
+            return BrandProfile(
+                did: did,
+                handle: account.handle,
+                displayName: account.displayName,
+                avatar: account.avatar
             )
-            let created = try JSONDecoder().decode(CreateRecordResponse.self, from: responseData)
-            let ref: JSONValue = .object([
-                "uri": .string(created.uri),
-                "cid": .string(created.cid),
-            ])
-            if root == nil {
-                root = ref
-            }
-            parent = ref
-            last = PublishedPost(uri: created.uri, cid: created.cid)
         }
+        return BrandProfile(did: did)
+    }
 
-        guard let last else {
-            throw PDSClientError.publishFailed("No posts to publish")
+    public func updateBrandProfile(did: String, profile: UpdateBrandProfileRequest) async throws -> BrandProfile {
+        var record: [String: JSONValue] = [
+            "$type": .string("app.bsky.actor.profile")
+        ]
+        if let displayName = profile.displayName {
+            record["displayName"] = .string(displayName)
         }
-        return last
+        if let description = profile.description {
+            record["description"] = .string(description)
+        }
+        if let avatar = profile.avatar {
+            record["avatar"] = .string(avatar)
+        }
+        let session = try await authenticatedSession(did: did)
+        try await xrpc(
+            session: session,
+            method: "POST",
+            path: "com.atproto.repo.putRecord",
+            body: [
+                "repo": .string(did),
+                "collection": .string("app.bsky.actor.profile"),
+                "rkey": .string("self"),
+                "validate": .bool(false),
+                "record": .object(record),
+            ]
+        )
+        let existing = try await store.managedAccount(did: did)
+        let updated = ManagedAccount(
+            did: did,
+            handle: existing?.handle,
+            displayName: profile.displayName ?? existing?.displayName,
+            avatar: profile.avatar ?? existing?.avatar,
+            pdsEndpoint: existing?.pdsEndpoint,
+            status: existing?.status ?? .active,
+            isDefault: existing?.isDefault ?? false
+        )
+        try await store.upsertManagedAccount(updated, now: Timestamp.iso8601())
+        return BrandProfile(
+            did: did,
+            handle: updated.handle,
+            displayName: updated.displayName,
+            description: profile.description,
+            avatar: updated.avatar
+        )
     }
 
     @discardableResult
@@ -337,14 +412,6 @@ private struct CreateRecordResponse: Codable {
     let cid: String
 }
 
-private extension Encodable {
-    func jsonValue() throws -> JSONValue {
-        let data = try JSONEncoder().encode(self)
-        let object = try JSONSerialization.jsonObject(with: data)
-        return try makeJSONValue(from: object)
-    }
-}
-
 private extension JSONEncoder {
     func encodeString<T: Encodable>(_ value: T) throws -> String {
         guard let string = String(data: try encode(value), encoding: .utf8) else {
@@ -362,13 +429,13 @@ private extension PostPlan {
             "createdAt": .string(createdAt),
         ]
         if let facets {
-            post["facets"] = try facets.jsonValue()
+            post["facets"] = try facets.skejJSONValue()
         }
         if let reply {
-            post["reply"] = try reply.jsonValue()
+            post["reply"] = try reply.skejJSONValue()
         }
         if let embed {
-            post["embed"] = try embed.jsonValue()
+            post["embed"] = try embed.skejJSONValue()
         }
         if let langs, !langs.isEmpty {
             post["langs"] = .array(langs.map { .string($0) })
@@ -383,28 +450,5 @@ private extension PostPlan {
             post["tags"] = .array(tags.map { .string($0) })
         }
         return post
-    }
-}
-
-private func makeJSONValue(from object: Any) throws -> JSONValue {
-    switch object {
-    case let value as String:
-        return .string(value)
-    case let value as Bool:
-        return .bool(value)
-    case let value as NSNumber:
-        return .number(value.doubleValue)
-    case let value as [Any]:
-        return .array(try value.map(makeJSONValue(from:)))
-    case let value as [String: Any]:
-        var result: [String: JSONValue] = [:]
-        for (key, item) in value {
-            result[key] = try makeJSONValue(from: item)
-        }
-        return .object(result)
-    case _ as NSNull:
-        return .null
-    default:
-        throw PDSClientError.publishFailed("Could not encode JSON value")
     }
 }

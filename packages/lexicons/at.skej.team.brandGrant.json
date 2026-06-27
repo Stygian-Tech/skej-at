@@ -1,0 +1,32 @@
+{
+  "lexicon": 1,
+  "id": "at.skej.team.brandGrant",
+  "defs": {
+    "main": {
+      "type": "record",
+      "description": "A Skej brand capability grant for a member or group.",
+      "key": "tid",
+      "record": {
+        "type": "object",
+        "required": ["teamUri", "brandDid", "granteeType", "grantee", "capabilities", "createdAt", "updatedAt"],
+        "properties": {
+          "teamUri": { "type": "string", "format": "at-uri" },
+          "brandDid": { "type": "string", "format": "did" },
+          "granteeType": { "type": "string", "enum": ["member", "group"] },
+          "grantee": {
+            "type": "string",
+            "description": "Member DID for member grants, group AT-URI for group grants."
+          },
+          "capabilities": {
+            "type": "array",
+            "items": { "type": "string", "enum": ["create", "approve", "manage"] },
+            "minLength": 1,
+            "maxLength": 3
+          },
+          "createdAt": { "type": "string", "format": "datetime" },
+          "updatedAt": { "type": "string", "format": "datetime" }
+        }
+      }
+    }
+  }
+}

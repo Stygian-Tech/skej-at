@@ -6,11 +6,15 @@ import {
 } from "@/lib/skejTypes";
 
 export const MAX_POST_GRAPHEMES = 300;
+export const MAX_SCHEDULE_TITLE_GRAPHEMES = 120;
 
 export interface ComposerDraft {
   mode: ComposerMode;
+  title?: string;
   posts: PostPlan[];
   scheduledFor: string;
+  timezone?: string;
+  dependencyScheduleUri?: string;
   contentWarning?: string;
 }
 
@@ -42,6 +46,14 @@ export function normalizePost(plan: PostPlan): PostPlan {
 export function validateComposerDraft(draft: ComposerDraft, now = new Date()): ValidationIssue[] {
   const issues: ValidationIssue[] = [];
   const posts = draft.posts.map(normalizePost);
+  const title = draft.title?.trim() ?? "";
+
+  if (title && countGraphemes(title) > MAX_SCHEDULE_TITLE_GRAPHEMES) {
+    issues.push({
+      field: "title",
+      message: `Title is over ${MAX_SCHEDULE_TITLE_GRAPHEMES} characters.`,
+    });
+  }
 
   if (posts.length === 0) {
     issues.push({ field: "posts", message: "Add at least one post." });
@@ -81,21 +93,19 @@ export function validateComposerDraft(draft: ComposerDraft, now = new Date()): V
   }
 
   if (draft.mode === "reply") {
-    const first = posts[0];
-    if (!first?.reply) {
+    if (!draft.dependencyScheduleUri) {
       issues.push({
         field: "reply",
-        message: "Add the Bluesky post you want to reply to.",
+        message: "Choose a Skej-managed post to reply to.",
       });
     }
   }
 
   if (draft.mode === "quote") {
-    const first = posts[0];
-    if (!first?.embed?.record) {
+    if (!draft.dependencyScheduleUri) {
       issues.push({
         field: "quote",
-        message: "Add the Bluesky post you want to quote.",
+        message: "Choose a Skej-managed post to quote.",
       });
     }
   }
@@ -126,12 +136,28 @@ export function buildScheduleRecord(
   });
 
   const timestamp = now.toISOString();
+  const scheduledAt = new Date(draft.scheduledFor).toISOString();
   return {
     $type: SKEJ_SCHEDULE_COLLECTION,
-    scheduledFor: new Date(draft.scheduledFor).toISOString(),
+    scheduledAt,
+    title: draft.title?.trim() || undefined,
+    timezonePolicy: "user_local",
+    userTimezone:
+      draft.timezone ??
+      Intl.DateTimeFormat().resolvedOptions().timeZone ??
+      "UTC",
     createdAt: timestamp,
     updatedAt: timestamp,
     status: "scheduled",
+    recordType: "app.bsky.feed.post",
+    publishRkey: generateULID(now),
+    retry: {
+      attemptCount: 0,
+      maxAttempts: 8,
+    },
+    dependency: draft.dependencyScheduleUri
+      ? { dependsOnScheduleUri: draft.dependencyScheduleUri }
+      : undefined,
     posts,
   };
 }
@@ -140,4 +166,19 @@ export function localDatetimeValue(date: Date): string {
   const offset = date.getTimezoneOffset();
   const local = new Date(date.getTime() - offset * 60_000);
   return local.toISOString().slice(0, 16);
+}
+
+export function generateULID(date = new Date()): string {
+  const alphabet = "0123456789ABCDEFGHJKMNPQRSTVWXYZ";
+  let time = date.getTime();
+  let encodedTime = "";
+  for (let index = 0; index < 10; index += 1) {
+    encodedTime = alphabet[time % 32] + encodedTime;
+    time = Math.floor(time / 32);
+  }
+  let random = "";
+  for (let index = 0; index < 16; index += 1) {
+    random += alphabet[Math.floor(Math.random() * alphabet.length)];
+  }
+  return encodedTime + random;
 }
