@@ -13,7 +13,10 @@ public func buildRouter(services: SkejServices) -> Router<BasicRequestContext> {
     }
 
     router.get("oauth/client-metadata.json") { _, _ in
-        try jsonResponse(OAuthMetadata.webClientMetadata(publicOrigin: services.config.publicOrigin))
+        try jsonResponse(OAuthMetadata.webClientMetadata(
+            publicOrigin: services.config.publicOrigin,
+            redirectOrigin: services.config.webOrigin
+        ))
     }
 
     router.get("oauth/jwks.json") { _, _ in
@@ -94,7 +97,7 @@ public func buildRouter(services: SkejServices) -> Router<BasicRequestContext> {
         )
         var headers = HTTPFields()
         headers[.location] = "/app"
-        let secure = services.config.environment == .prod ? "; Secure" : ""
+        let secure = services.config.environment == .local || services.config.environment == .test ? "" : "; Secure"
         headers[HTTPField.Name("Set-Cookie")!] =
             "skej_session=\(session); Path=/; HttpOnly; SameSite=Lax; Max-Age=2592000\(secure)"
         return Response(status: .found, headers: headers)
@@ -112,8 +115,9 @@ public func buildRouter(services: SkejServices) -> Router<BasicRequestContext> {
             try await services.store.deleteWebSession(sessionID: sessionID)
         }
         var headers = HTTPFields()
+        let secure = services.config.environment == .local || services.config.environment == .test ? "" : "; Secure"
         headers[HTTPField.Name("Set-Cookie")!] =
-            "skej_session=deleted; Path=/; HttpOnly; SameSite=Lax; Max-Age=0"
+            "skej_session=deleted; Path=/; HttpOnly; SameSite=Lax; Max-Age=0\(secure)"
         return try jsonResponse(OKResponse(ok: true), status: .ok).withHeaders(headers)
     }
 

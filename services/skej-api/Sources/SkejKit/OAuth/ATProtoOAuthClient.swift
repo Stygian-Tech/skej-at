@@ -188,7 +188,7 @@ public struct ATProtoOAuthClient: OAuthClient {
     }
 
     private var redirectURI: String {
-        "\(config.publicOrigin)/oauth/callback"
+        "\(config.webOrigin ?? config.publicOrigin)/oauth/callback"
     }
 
     private func tokenRequest(endpoint: String, dpopKey: DPoPKey, form: [String: String]) async throws -> TokenResponse {

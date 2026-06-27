@@ -77,12 +77,33 @@ struct RouterTests {
     }
 
     @Test func oauthMetadataUsesSkejOrigin() async throws {
-        let services = try await makeTestServices()
+        let store = try SQLiteStore(path: ":memory:")
+        try await store.migrate()
+        let services = SkejServices(
+            config: AppConfig(
+                port: 8080,
+                environment: .dev,
+                publicOrigin: "https://api.testing.skej.at",
+                webOrigin: "https://testing.skej.at",
+                sqlitePath: ":memory:",
+                workerEnabled: false
+            ),
+            store: store,
+            pdsClient: InMemoryPDSClient(),
+            oauthClient: LocalOAuthClient()
+        )
         let app = Application(router: buildRouter(services: services))
 
         try await app.test(.router) { client in
             try await client.execute(uri: "/oauth/client-metadata.json", method: .get) { response in
                 #expect(response.status == .ok)
+                let metadata = try JSONDecoder().decode(
+                    OAuthMetadataResponse.self,
+                    from: Data(String(buffer: response.body).utf8)
+                )
+                #expect(metadata.clientID == "https://api.testing.skej.at/oauth/client-metadata.json")
+                #expect(metadata.clientURI == "https://api.testing.skej.at")
+                #expect(metadata.redirectURIs == ["https://testing.skej.at/oauth/callback"])
                 let body = String(buffer: response.body)
                 #expect(body.contains("transition:generic"))
                 #expect(body.contains("\"token_endpoint_auth_method\":\"none\""))
@@ -123,6 +144,41 @@ struct RouterTests {
 
             try await client.execute(uri: "/v1/me", method: .get, headers: headers) { response in
                 #expect(response.status == .unauthorized)
+            }
+        }
+    }
+
+    @Test func oauthCallbackKeepsHostScopedSessionForWebRewrite() async throws {
+        let store = try SQLiteStore(path: ":memory:")
+        try await store.migrate()
+        let services = SkejServices(
+            config: AppConfig(
+                port: 8080,
+                environment: .dev,
+                publicOrigin: "https://api.testing.skej.at",
+                webOrigin: "https://testing.skej.at",
+                sqlitePath: ":memory:",
+                workerEnabled: false
+            ),
+            store: store,
+            pdsClient: InMemoryPDSClient(),
+            oauthClient: LocalOAuthClient()
+        )
+        let app = Application(router: buildRouter(services: services))
+
+        try await app.test(.router) { client in
+            var callback = ""
+            try await client.execute(uri: "/oauth/start?handle=alex.skej.at", method: .get) { response in
+                callback = response.headers[.location] ?? ""
+            }
+
+            try await client.execute(uri: callback, method: .get) { response in
+                #expect(response.status == .found)
+                #expect(response.headers[.location] == "/app")
+                let cookie = response.headers[HTTPField.Name("Set-Cookie")!] ?? ""
+                #expect(cookie.contains("skej_session="))
+                #expect(cookie.contains("Secure"))
+                #expect(!cookie.contains("Domain="))
             }
         }
     }
@@ -298,6 +354,18 @@ struct RouterTests {
             #expect(profile.displayName == "Skej Brand")
             #expect(profile.description == "Business account")
         }
+    }
+}
+
+private struct OAuthMetadataResponse: Decodable {
+    let clientID: String
+    let clientURI: String
+    let redirectURIs: [String]
+
+    enum CodingKeys: String, CodingKey {
+        case clientID = "client_id"
+        case clientURI = "client_uri"
+        case redirectURIs = "redirect_uris"
     }
 }
 

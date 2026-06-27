@@ -11,6 +11,7 @@ public struct AppConfig: Sendable {
     public let port: Int
     public let environment: AppEnvironment
     public let publicOrigin: String
+    public let webOrigin: String?
     public let sqlitePath: String
     public let workerEnabled: Bool
     public let workerIntervalSeconds: UInt64
@@ -20,6 +21,7 @@ public struct AppConfig: Sendable {
         port: Int,
         environment: AppEnvironment,
         publicOrigin: String,
+        webOrigin: String? = nil,
         sqlitePath: String,
         workerEnabled: Bool = true,
         workerIntervalSeconds: UInt64 = 30,
@@ -28,6 +30,7 @@ public struct AppConfig: Sendable {
         self.port = port
         self.environment = environment
         self.publicOrigin = publicOrigin.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        self.webOrigin = webOrigin?.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
         self.sqlitePath = sqlitePath
         self.workerEnabled = workerEnabled
         self.workerIntervalSeconds = workerIntervalSeconds
@@ -50,6 +53,7 @@ public struct AppConfig: Sendable {
         }()
         let port = Int(env["PORT"] ?? "8080") ?? 8080
         let origin = env["SKEJ_PUBLIC_ORIGIN"] ?? env["PUBLIC_ORIGIN"] ?? "http://127.0.0.1:\(port)"
+        let webOrigin = emptyToNil(env["SKEJ_WEB_ORIGIN"])
         let sqlitePath = normalizedSQLitePath(env["SKEJ_SQLITE_PATH"], environment: appEnv)
         let workerEnabled = !["0", "false", "no"].contains((env["SKEJ_WORKER_ENABLED"] ?? "true").lowercased())
         let interval = UInt64(env["SKEJ_WORKER_INTERVAL_SECONDS"] ?? "30") ?? 30
@@ -61,6 +65,7 @@ public struct AppConfig: Sendable {
             port: port,
             environment: appEnv,
             publicOrigin: origin,
+            webOrigin: webOrigin,
             sqlitePath: sqlitePath,
             workerEnabled: workerEnabled,
             workerIntervalSeconds: interval,
@@ -141,5 +146,11 @@ public struct AppConfig: Sendable {
         case .local, .test:
             return configuredPath
         }
+    }
+
+    private static func emptyToNil(_ value: String?) -> String? {
+        guard let value else { return nil }
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? nil : trimmed
     }
 }

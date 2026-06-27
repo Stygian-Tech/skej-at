@@ -110,4 +110,6 @@ jobs:
           FLY_SKEJ_GATEWAY_APP_PROD: ${{ secrets.FLY_SKEJ_GATEWAY_APP_PROD }}
           SKEJ_PUBLIC_ORIGIN_DEV: ${{ secrets.SKEJ_PUBLIC_ORIGIN_DEV }}
           SKEJ_PUBLIC_ORIGIN_PROD: ${{ secrets.SKEJ_PUBLIC_ORIGIN_PROD }}
+          SKEJ_WEB_ORIGIN_DEV: ${{ secrets.SKEJ_WEB_ORIGIN_DEV }}
+          SKEJ_WEB_ORIGIN_PROD: ${{ secrets.SKEJ_WEB_ORIGIN_PROD }}
         run: bash scripts/fly-deploy-gateway.sh "${{ github.ref_name }}"

@@ -12,10 +12,12 @@ if [ "$BRANCH" = "main" ]; then
   APP="${FLY_SKEJ_GATEWAY_APP_PROD:-skej-at-prod-gateway}"
   APP_ENV_VALUE="prod"
   PUBLIC_ORIGIN_VALUE="${SKEJ_PUBLIC_ORIGIN_PROD:-https://skej.at}"
+  WEB_ORIGIN_VALUE="${SKEJ_WEB_ORIGIN_PROD:-https://skej.at}"
 else
   APP="${FLY_SKEJ_GATEWAY_APP_DEV:-skej-at-dev-gateway}"
   APP_ENV_VALUE="dev"
-  PUBLIC_ORIGIN_VALUE="${SKEJ_PUBLIC_ORIGIN_DEV:-https://testing.skej.at}"
+  PUBLIC_ORIGIN_VALUE="${SKEJ_PUBLIC_ORIGIN_DEV:-https://api.testing.skej.at}"
+  WEB_ORIGIN_VALUE="${SKEJ_WEB_ORIGIN_DEV:-https://testing.skej.at}"
 fi
 
 DEPLOY_ARGS=(
@@ -25,6 +27,7 @@ DEPLOY_ARGS=(
   --env "APP_ENV=$APP_ENV_VALUE"
   --env "SKEJ_PUBLIC_ORIGIN=$PUBLIC_ORIGIN_VALUE"
   --env "PUBLIC_ORIGIN=$PUBLIC_ORIGIN_VALUE"
+  --env "SKEJ_WEB_ORIGIN=$WEB_ORIGIN_VALUE"
   --env "SKEJ_SQLITE_PATH=/var/lib/skej-api/data/skej.sqlite"
 )
 

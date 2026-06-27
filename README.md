@@ -24,9 +24,9 @@ swift run SkejAPI
 
 ## Environment
 
-The OAuth public origin must be the browser-facing web origin because the web app
-proxies `/oauth/*` to the Swift gateway. That origin is what ATProto sees in
-`/oauth/client-metadata.json` and where providers redirect after authorization.
+Hosted dev OAuth follows the same pattern as the other ATProto apps: the public
+gateway serves client metadata from an unprotected API origin, while redirect
+URIs point back at the browser-facing web origin.
 
 Local defaults:
 
@@ -41,6 +41,7 @@ NEXT_PUBLIC_SITE_URL=http://127.0.0.1:3000
 APP_ENV=local
 PORT=8080
 SKEJ_PUBLIC_ORIGIN=http://127.0.0.1:3000
+SKEJ_WEB_ORIGIN=
 SKEJ_SQLITE_PATH=data/skej.sqlite
 SKEJ_WORKER_ENABLED=true
 SKEJ_WORKER_INTERVAL_SECONDS=30
@@ -52,7 +53,7 @@ Hosted defaults:
 | Target | Web Origin | API Origin | Banner | OAuth Callback |
 | --- | --- | --- | --- | --- |
 | Local | `http://127.0.0.1:3000` | `http://127.0.0.1:8080` | `local` | `http://127.0.0.1:3000/oauth/callback` |
-| Dev | `https://testing.skej.at` | `https://skej-at-dev-gateway.fly.dev` | `dev` | `https://testing.skej.at/oauth/callback` |
+| Dev | `https://testing.skej.at` | `https://api.testing.skej.at` | `dev` | `https://testing.skej.at/oauth/callback` |
 | Prod | `https://skej.at` | `https://skej-at-prod-gateway.fly.dev` | `prod` | `https://skej.at/oauth/callback` |
 
 Required hosted web variables:
@@ -75,7 +76,8 @@ Required hosted gateway variables:
 
 ```bash
 APP_ENV=dev
-SKEJ_PUBLIC_ORIGIN=https://testing.skej.at
+SKEJ_PUBLIC_ORIGIN=https://api.testing.skej.at
+SKEJ_WEB_ORIGIN=https://testing.skej.at
 ```
 
 ```bash
@@ -134,3 +136,5 @@ Optional GitHub secrets:
 - `FLY_SKEJ_GATEWAY_APP_PROD`
 - `SKEJ_PUBLIC_ORIGIN_DEV`
 - `SKEJ_PUBLIC_ORIGIN_PROD`
+- `SKEJ_WEB_ORIGIN_DEV`
+- `SKEJ_WEB_ORIGIN_PROD`
