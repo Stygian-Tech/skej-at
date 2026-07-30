@@ -2,8 +2,10 @@ import Crypto
 import Foundation
 import Hummingbird
 import HTTPTypes
+import Logging
 
 public func buildRouter(services: SkejServices) -> Router<BasicRequestContext> {
+    let logger = Logger(label: "skej.router")
     let router = Router(context: BasicRequestContext.self)
     router.add(middleware: ErrorMiddleware())
     router.add(middleware: CorsMiddleware())
@@ -402,6 +404,44 @@ public func buildRouter(services: SkejServices) -> Router<BasicRequestContext> {
         let viewer = try await authorize(did: did, request: request, services: services)
         _ = try await requireAnyBrandCapability([.create, .approve, .manage], brandDid: did, viewer: viewer, services: services)
         return try await listSchedules(did: did, services: services)
+    }
+
+    v1.post("accounts/:did/link-preview") { request, context in
+        let did = try context.parameters.require("did")
+        _ = try await authorize(did: did, request: request, services: services)
+        let body = try await decodeJSONBody(request, as: LinkPreviewRequest.self)
+        do {
+            let embed = try await LinkPreviewService(pdsClient: services.pdsClient)
+                .hydrate(did: did, url: body.url)
+            return try jsonResponse(embed)
+        } catch LinkPreviewError.invalidURL {
+            logger.warning("link preview rejected", metadata: ["category": "invalid_url"])
+            throw APIError(
+                status: .badRequest,
+                code: "invalid_link_url",
+                message: "Enter a valid HTTP or HTTPS link."
+            )
+        } catch LinkPreviewError.unsafeURL {
+            logger.warning("link preview rejected", metadata: [
+                "host": "\(URL(string: body.url)?.host ?? "unknown")",
+                "category": "unsafe_url",
+            ])
+            throw APIError(
+                status: .badRequest,
+                code: "unsafe_link_url",
+                message: "That link cannot be previewed."
+            )
+        } catch {
+            logger.warning("link preview failed", metadata: [
+                "host": "\(URL(string: body.url)?.host ?? "unknown")",
+                "category": "\(String(describing: type(of: error)))",
+            ])
+            throw APIError(
+                status: .badGateway,
+                code: "link_preview_failed",
+                message: "The link preview could not be loaded. The link can still be scheduled."
+            )
+        }
     }
 
     v1.post("accounts/:did/schedules") { request, context in
@@ -823,6 +863,10 @@ private func listSchedules(did: String, services: SkejServices) async throws -> 
 
 private func createSchedule(did: String, body: CreateScheduleRequest, viewer: Viewer, services: SkejServices) async throws -> Response {
     var record = body.record
+    record.posts = record.posts.map(PostRecordCanonicalizer.canonicalize)
+    if let shadowRecord = record.shadowRecord {
+        record.shadowRecord = PostRecordCanonicalizer.canonicalizeFeedPost(shadowRecord)
+    }
     try validate(record: record)
     let now = Timestamp.iso8601()
     let rkey = newRkey()
@@ -855,6 +899,10 @@ private func updateSchedule(did: String, rkey: String, body: CreateScheduleReque
         throw APIError(status: .notFound, code: "not_found", message: "Schedule not found")
     }
     var record = body.record
+    record.posts = record.posts.map(PostRecordCanonicalizer.canonicalize)
+    if let shadowRecord = record.shadowRecord {
+        record.shadowRecord = PostRecordCanonicalizer.canonicalizeFeedPost(shadowRecord)
+    }
     try validate(record: record)
     let now = Timestamp.iso8601()
     let existingRecord = try await services.pdsClient.getSchedule(did: did, rkey: rkey)

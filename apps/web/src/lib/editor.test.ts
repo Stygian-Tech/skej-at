@@ -3,6 +3,7 @@ import { describe, expect, it } from "bun:test";
 import {
   buildScheduleRecord,
   countGraphemes,
+  firstHTTPURL,
   validateComposerDraft,
 } from "@/lib/editor";
 
@@ -64,3 +65,21 @@ describe("schedule records", () => {
   });
 });
 
+describe("link detection", () => {
+  it("finds the first HTTP URL and removes sentence punctuation", () => {
+    expect(firstHTTPURL("Read https://example.com, then https://bsky.app.")).toBe(
+      "https://example.com"
+    );
+  });
+
+  it("preserves balanced URL punctuation and removes unmatched closers", () => {
+    expect(firstHTTPURL("See (https://example.com/path_(one)).")).toBe(
+      "https://example.com/path_(one)"
+    );
+  });
+
+  it("ignores malformed and non-HTTP URLs", () => {
+    expect(firstHTTPURL("ftp://example.com")).toBeUndefined();
+    expect(firstHTTPURL("https://")).toBeUndefined();
+  });
+});

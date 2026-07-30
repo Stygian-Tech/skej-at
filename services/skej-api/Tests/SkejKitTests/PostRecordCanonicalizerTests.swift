@@ -1,0 +1,177 @@
+import Foundation
+import SkejKit
+import Testing
+
+@Suite
+struct PostRecordCanonicalizerTests {
+    @Test func detectsMultipleURLsWithUTF8ByteOffsetsAndPunctuation() throws {
+        let text = "👋 https://example.com, then (https://bsky.app)."
+        let facets = PostRecordCanonicalizer.linkFacets(in: text)
+
+        #expect(facets?.count == 2)
+        #expect(byteRange(facets?[0]) == 5..<24)
+        #expect(linkURI(facets?[0]) == "https://example.com")
+        #expect(linkURI(facets?[1]) == "https://bsky.app")
+        #expect(byteRange(facets?[1]) == 32..<48)
+    }
+
+    @Test func preservesValidNonLinkFacetsAndReplacesLinkFacets() throws {
+        let mention: JSONValue = .object([
+            "index": .object([
+                "byteStart": .number(0),
+                "byteEnd": .number(4),
+            ]),
+            "features": .array([
+                .object([
+                    "$type": .string("app.bsky.richtext.facet#mention"),
+                    "did": .string("did:plc:test"),
+                ]),
+            ]),
+        ])
+        let staleLink: JSONValue = .object([
+            "index": .object([
+                "byteStart": .number(5),
+                "byteEnd": .number(8),
+            ]),
+            "features": .array([
+                .object([
+                    "$type": .string("app.bsky.richtext.facet#link"),
+                    "uri": .string("https://stale.invalid"),
+                ]),
+            ]),
+        ])
+
+        let facets = PostRecordCanonicalizer.linkFacets(
+            in: "@sam https://example.com",
+            preserving: [staleLink, mention]
+        )
+
+        #expect(facets?.count == 2)
+        #expect(mentionDID(facets?[0]) == "did:plc:test")
+        #expect(linkURI(facets?[1]) == "https://example.com")
+    }
+
+    @Test func dropsPreservedFacetsThatOverlapDetectedLinks() {
+        let overlap: JSONValue = .object([
+            "index": .object([
+                "byteStart": .number(8),
+                "byteEnd": .number(12),
+            ]),
+            "features": .array([
+                .object([
+                    "$type": .string("app.bsky.richtext.facet#tag"),
+                    "tag": .string("bad"),
+                ]),
+            ]),
+        ])
+
+        let facets = PostRecordCanonicalizer.linkFacets(
+            in: "read https://example.com",
+            preserving: [overlap]
+        )
+
+        #expect(facets?.count == 1)
+        #expect(linkURI(facets?[0]) == "https://example.com")
+    }
+
+    @Test func ignoresMalformedURLsAndKeepsBalancedParentheses() {
+        let facets = PostRecordCanonicalizer.linkFacets(
+            in: "bad http:// and good https://example.com/docs_(v2))."
+        )
+
+        #expect(facets?.count == 1)
+        #expect(linkURI(facets?[0]) == "https://example.com/docs_(v2)")
+    }
+
+    @Test func normalizesLegacyExternalEmbedAndBuildsExactFeedRecord() throws {
+        let legacyEmbed: JSONValue = .object([
+            "external": .object([
+                "uri": .string("https://example.com"),
+                "title": .string("Example"),
+            ]),
+        ])
+        let post = try PostRecordCanonicalizer.feedPostValue(
+            PostPlan(text: "Read https://example.com", embed: legacyEmbed),
+            createdAt: "2026-07-29T12:00:00Z"
+        )
+
+        guard case let .object(embed)? = post["embed"],
+              case let .string(type)? = embed["$type"],
+              case let .object(external)? = embed["external"],
+              case let .string(description)? = external["description"]
+        else {
+            Issue.record("Expected a typed external embed")
+            return
+        }
+        #expect(type == "app.bsky.embed.external")
+        #expect(description == "")
+        guard case let .array(facets)? = post["facets"] else {
+            Issue.record("Expected generated link facets")
+            return
+        }
+        #expect(linkURI(facets.first) == "https://example.com")
+    }
+
+    @Test func repairsAlreadyScheduledShadowRecordsBeforePublishing() {
+        let repaired = PostRecordCanonicalizer.canonicalizeFeedPost(.object([
+            "$type": .string("app.bsky.feed.post"),
+            "text": .string("Saved earlier https://example.com"),
+            "embed": .object([
+                "external": .object([
+                    "uri": .string("https://example.com"),
+                    "title": .string("Example"),
+                    "description": .string("Description"),
+                ]),
+            ]),
+        ]))
+
+        guard case let .object(post) = repaired,
+              case let .array(facets)? = post["facets"],
+              case let .object(embed)? = post["embed"],
+              case let .string(type)? = embed["$type"]
+        else {
+            Issue.record("Expected a repaired feed record")
+            return
+        }
+        #expect(linkURI(facets.first) == "https://example.com")
+        #expect(type == "app.bsky.embed.external")
+    }
+
+    private func byteRange(_ facet: JSONValue?) -> Range<Int>? {
+        guard case let .object(object)? = facet,
+              case let .object(index)? = object["index"],
+              case let .number(start)? = index["byteStart"],
+              case let .number(end)? = index["byteEnd"]
+        else {
+            return nil
+        }
+        return Int(start)..<Int(end)
+    }
+
+    private func linkURI(_ facet: JSONValue?) -> String? {
+        featureValue(facet, type: "app.bsky.richtext.facet#link", key: "uri")
+    }
+
+    private func mentionDID(_ facet: JSONValue?) -> String? {
+        featureValue(facet, type: "app.bsky.richtext.facet#mention", key: "did")
+    }
+
+    private func featureValue(_ facet: JSONValue?, type: String, key: String) -> String? {
+        guard case let .object(object)? = facet,
+              case let .array(features)? = object["features"]
+        else {
+            return nil
+        }
+        for feature in features {
+            guard case let .object(value) = feature,
+                  case let .string(featureType)? = value["$type"],
+                  featureType == type,
+                  case let .string(result)? = value[key]
+            else {
+                continue
+            }
+            return result
+        }
+        return nil
+    }
+}

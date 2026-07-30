@@ -116,6 +116,89 @@ public struct PostPlan: Codable, Equatable, Sendable {
     }
 }
 
+public struct LinkPreviewRequest: Codable, Equatable, Sendable {
+    public let url: String
+
+    public init(url: String) {
+        self.url = url
+    }
+}
+
+public struct ATProtoCIDLink: Codable, Equatable, Sendable {
+    public let link: String
+
+    public init(link: String) {
+        self.link = link
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case link = "$link"
+    }
+}
+
+public struct ATProtoBlobReference: Codable, Equatable, Sendable {
+    public let type: String
+    public let ref: ATProtoCIDLink
+    public let mimeType: String
+    public let size: Int
+
+    public init(
+        type: String = "blob",
+        ref: ATProtoCIDLink,
+        mimeType: String,
+        size: Int
+    ) {
+        self.type = type
+        self.ref = ref
+        self.mimeType = mimeType
+        self.size = size
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case type = "$type"
+        case ref
+        case mimeType
+        case size
+    }
+}
+
+public struct ExternalEmbedContent: Codable, Equatable, Sendable {
+    public let uri: String
+    public let title: String
+    public let description: String
+    public let thumb: ATProtoBlobReference?
+
+    public init(
+        uri: String,
+        title: String,
+        description: String,
+        thumb: ATProtoBlobReference? = nil
+    ) {
+        self.uri = uri
+        self.title = title
+        self.description = description
+        self.thumb = thumb
+    }
+}
+
+public struct ExternalEmbed: Codable, Equatable, Sendable {
+    public let type: String
+    public let external: ExternalEmbedContent
+
+    public init(
+        type: String = "app.bsky.embed.external",
+        external: ExternalEmbedContent
+    ) {
+        self.type = type
+        self.external = external
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case type = "$type"
+        case external
+    }
+}
+
 public struct SkejScheduleRecord: Codable, Equatable, Sendable {
     public let type: String
     public var scheduledAt: String

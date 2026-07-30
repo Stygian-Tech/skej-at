@@ -57,6 +57,63 @@ struct RouterTests {
         }
     }
 
+    @Test func createScheduleCanonicalizesLinkFacetsAndLegacyEmbed() async throws {
+        let services = try await makeTestServices()
+        let app = Application(router: buildRouter(services: services))
+        var record = makeRecord()
+        record.posts = [
+            PostPlan(
+                text: "Read https://example.com",
+                embed: .object([
+                    "external": .object([
+                        "uri": .string("https://example.com"),
+                        "title": .string("Example"),
+                        "description": .string("Example description"),
+                    ]),
+                ])
+            ),
+        ]
+        let body = try encodedBody(CreateScheduleRequest(record: record))
+
+        try await app.test(.router) { client in
+            try await client.execute(
+                uri: "/v1/schedules",
+                method: .post,
+                headers: didHeaders("did:plc:test"),
+                body: body
+            ) { response in
+                #expect(response.status == .created)
+                let summary = try JSONDecoder().decode(
+                    ScheduledPostSummary.self,
+                    from: Data(String(buffer: response.body).utf8)
+                )
+                #expect(summary.record.posts.first?.facets?.count == 1)
+                guard case let .object(embed)? = summary.record.posts.first?.embed,
+                      case let .string(type)? = embed["$type"]
+                else {
+                    Issue.record("Expected canonical external embed")
+                    return
+                }
+                #expect(type == "app.bsky.embed.external")
+            }
+        }
+    }
+
+    @Test func linkPreviewRequiresAuthentication() async throws {
+        let services = try await makeTestServices()
+        let app = Application(router: buildRouter(services: services))
+
+        try await app.test(.router) { client in
+            try await client.execute(
+                uri: "/v1/accounts/did:plc:test/link-preview",
+                method: .post,
+                body: try encodedBody(LinkPreviewRequest(url: "https://example.com"))
+            ) { response in
+                #expect(response.status == .unauthorized)
+            }
+        }
+    }
+
     @Test func createScheduleAcceptsBrowserISODate() async throws {
         let services = try await makeTestServices()
         let app = Application(router: buildRouter(services: services))
