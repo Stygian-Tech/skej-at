@@ -7,6 +7,8 @@ import {
 
 export const MAX_POST_GRAPHEMES = 300;
 export const MAX_SCHEDULE_TITLE_GRAPHEMES = 120;
+const HTTP_URL_PATTERN = /https?:\/\/[^\s<>"']+/giu;
+const SIMPLE_TRAILING_PUNCTUATION = /[.,!?;:]+$/u;
 
 export interface ComposerDraft {
   mode: ComposerMode;
@@ -30,6 +32,41 @@ export function countGraphemes(text: string): number {
     return Array.from(segmenter.segment(text)).length;
   }
   return Array.from(text).length;
+}
+
+export function firstHTTPURL(text: string): string | undefined {
+  HTTP_URL_PATTERN.lastIndex = 0;
+  const match = HTTP_URL_PATTERN.exec(text);
+  if (!match) return undefined;
+
+  let candidate = match[0].replace(SIMPLE_TRAILING_PUNCTUATION, "");
+  const pairs: Array<[string, string]> = [
+    ["(", ")"],
+    ["[", "]"],
+    ["{", "}"],
+  ];
+  let changed = true;
+  while (changed) {
+    changed = false;
+    for (const [open, close] of pairs) {
+      if (
+        candidate.endsWith(close) &&
+        candidate.split(close).length > candidate.split(open).length
+      ) {
+        candidate = candidate.slice(0, -1);
+        changed = true;
+      }
+    }
+  }
+
+  try {
+    const url = new URL(candidate);
+    return url.protocol === "http:" || url.protocol === "https:"
+      ? candidate
+      : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 export function normalizePost(plan: PostPlan): PostPlan {

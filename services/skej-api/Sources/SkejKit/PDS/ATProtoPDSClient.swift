@@ -100,13 +100,32 @@ public struct ATProtoPDSClient: PDSClient {
         try await store.deleteScheduleRecord(did: did, rkey: rkey)
     }
 
+    public func uploadBlob(
+        did: String,
+        data: Data,
+        mimeType: String
+    ) async throws -> ATProtoBlobReference {
+        let session = try await authenticatedSession(did: did)
+        let responseData = try await xrpcData(
+            session: session,
+            method: "POST",
+            url: "\(session.token.pdsEndpoint)/xrpc/com.atproto.repo.uploadBlob",
+            body: data,
+            contentType: mimeType
+        )
+        return try JSONDecoder().decode(UploadBlobResponse.self, from: responseData).blob
+    }
+
     public func publishThread(did: String, record: SkejScheduleRecord) async throws -> PublishedPost {
         let session = try await authenticatedSession(did: did)
         let recordValue: JSONValue
         if let shadowRecord = record.shadowRecord {
-            recordValue = shadowRecord
+            recordValue = PostRecordCanonicalizer.canonicalizeFeedPost(shadowRecord)
         } else if let plan = record.posts.first {
-            recordValue = .object(try plan.feedPostValue(createdAt: Timestamp.iso8601()))
+            recordValue = .object(try PostRecordCanonicalizer.feedPostValue(
+                plan,
+                createdAt: Timestamp.iso8601()
+            ))
         } else {
             throw PDSClientError.publishFailed("No record payload to publish")
         }
@@ -204,13 +223,15 @@ public struct ATProtoPDSClient: PDSClient {
         session: AuthenticatedATProtoSession,
         method: String,
         url: String,
-        body: Data?
+        body: Data?,
+        contentType: String = "application/json"
     ) async throws -> Data {
         try await xrpcDataWithNonceAndRefresh(
             session: session,
             method: method,
             url: url,
             body: body,
+            contentType: contentType,
             allowRefresh: true
         )
     }
@@ -220,14 +241,29 @@ public struct ATProtoPDSClient: PDSClient {
         method: String,
         url: String,
         body: Data?,
+        contentType: String,
         allowRefresh: Bool
     ) async throws -> Data {
         do {
-            return try await xrpcData(session: session, method: method, url: url, body: body, dpopNonce: nil)
+            return try await xrpcData(
+                session: session,
+                method: method,
+                url: url,
+                body: body,
+                contentType: contentType,
+                dpopNonce: nil
+            )
         } catch {
             if let nonce = dpopNonce(from: error) {
                 do {
-                    return try await xrpcData(session: session, method: method, url: url, body: body, dpopNonce: nonce)
+                    return try await xrpcData(
+                        session: session,
+                        method: method,
+                        url: url,
+                        body: body,
+                        contentType: contentType,
+                        dpopNonce: nonce
+                    )
                 } catch {
                     if allowRefresh, isUnauthorized(error) {
                         let refreshed = try await refreshSession(session)
@@ -236,6 +272,7 @@ public struct ATProtoPDSClient: PDSClient {
                             method: method,
                             url: url,
                             body: body,
+                            contentType: contentType,
                             allowRefresh: false
                         )
                     }
@@ -249,6 +286,7 @@ public struct ATProtoPDSClient: PDSClient {
                     method: method,
                     url: url,
                     body: body,
+                    contentType: contentType,
                     allowRefresh: false
                 )
             }
@@ -261,6 +299,7 @@ public struct ATProtoPDSClient: PDSClient {
         method: String,
         url: String,
         body: Data?,
+        contentType: String,
         dpopNonce: String?
     ) async throws -> Data {
         let dpop = try session.dpopKey.proof(
@@ -275,7 +314,7 @@ public struct ATProtoPDSClient: PDSClient {
             headers: [
                 "Authorization": "DPoP \(session.token.accessToken)",
                 "DPoP": dpop,
-                "Content-Type": "application/json",
+                "Content-Type": contentType,
             ],
             body: body
         ))
@@ -412,43 +451,15 @@ private struct CreateRecordResponse: Codable {
     let cid: String
 }
 
+private struct UploadBlobResponse: Codable {
+    let blob: ATProtoBlobReference
+}
+
 private extension JSONEncoder {
     func encodeString<T: Encodable>(_ value: T) throws -> String {
         guard let string = String(data: try encode(value), encoding: .utf8) else {
             throw PDSClientError.publishFailed("Could not encode JSON string")
         }
         return string
-    }
-}
-
-private extension PostPlan {
-    func feedPostValue(createdAt: String) throws -> [String: JSONValue] {
-        var post: [String: JSONValue] = [
-            "$type": .string("app.bsky.feed.post"),
-            "text": .string(text),
-            "createdAt": .string(createdAt),
-        ]
-        if let facets {
-            post["facets"] = try facets.skejJSONValue()
-        }
-        if let reply {
-            post["reply"] = try reply.skejJSONValue()
-        }
-        if let embed {
-            post["embed"] = try embed.skejJSONValue()
-        }
-        if let langs, !langs.isEmpty {
-            post["langs"] = .array(langs.map { .string($0) })
-        }
-        if let labels, !labels.isEmpty {
-            post["labels"] = .object([
-                "$type": .string("com.atproto.label.defs#selfLabels"),
-                "values": .array(labels.map { .object(["val": .string($0)]) }),
-            ])
-        }
-        if let tags, !tags.isEmpty {
-            post["tags"] = .array(tags.map { .string($0) })
-        }
-        return post
     }
 }

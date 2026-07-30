@@ -8,6 +8,11 @@ public protocol PDSClient: Sendable {
     func getSchedule(did: String, rkey: String) async throws -> SkejScheduleRecord?
     func listSchedules(did: String) async throws -> [String: SkejScheduleRecord]
     func deleteSchedule(did: String, rkey: String) async throws
+    func uploadBlob(
+        did: String,
+        data: Data,
+        mimeType: String
+    ) async throws -> ATProtoBlobReference
     func publishThread(did: String, record: SkejScheduleRecord) async throws -> PublishedPost
     func getBrandProfile(did: String) async throws -> BrandProfile
     func updateBrandProfile(did: String, profile: UpdateBrandProfileRequest) async throws -> BrandProfile
@@ -52,6 +57,18 @@ public struct SQLitePDSClient: PDSClient {
 
     public func deleteSchedule(did: String, rkey: String) async throws {
         try await store.deleteScheduleRecord(did: did, rkey: rkey)
+    }
+
+    public func uploadBlob(
+        did: String,
+        data: Data,
+        mimeType: String
+    ) async throws -> ATProtoBlobReference {
+        ATProtoBlobReference(
+            ref: ATProtoCIDLink(link: "bafylocal\(data.count)"),
+            mimeType: mimeType,
+            size: data.count
+        )
     }
 
     public func publishThread(did: String, record: SkejScheduleRecord) async throws -> PublishedPost {
@@ -156,6 +173,18 @@ public actor InMemoryPDSClient: PDSClient {
 
     public func deleteSchedule(did: String, rkey: String) async throws {
         schedules[did]?[rkey] = nil
+    }
+
+    public func uploadBlob(
+        did: String,
+        data: Data,
+        mimeType: String
+    ) async throws -> ATProtoBlobReference {
+        ATProtoBlobReference(
+            ref: ATProtoCIDLink(link: "bafyinmemory\(data.count)"),
+            mimeType: mimeType,
+            size: data.count
+        )
     }
 
     public func publishThread(did: String, record: SkejScheduleRecord) async throws -> PublishedPost {

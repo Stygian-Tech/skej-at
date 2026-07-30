@@ -44,6 +44,7 @@ import {
   cancelSchedule,
   duplicateSchedule,
   getViewer,
+  hydrateLinkPreview,
   listAccountSchedules,
   listAccounts,
   listSchedules,
@@ -58,9 +59,16 @@ import {
   MAX_POST_GRAPHEMES,
   MAX_SCHEDULE_TITLE_GRAPHEMES,
   countGraphemes,
+  firstHTTPURL,
   localDatetimeValue,
   validateComposerDraft,
 } from "@/lib/editor";
+import {
+  LINK_PREVIEW_DEBOUNCE_MS,
+  automaticLinkPreviewURL,
+  canApplyAutomaticLinkPreview,
+  shouldRemoveAutomaticLinkPreview,
+} from "@/lib/linkPreview";
 import { cn } from "@/lib/utils";
 import {
   CommunityCalendarEventRecord,
@@ -72,6 +80,10 @@ import {
 
 type AuthStatus = "loading" | "anonymous" | "authenticated";
 type QueueMode = "upcoming" | "history";
+type LinkPreviewStatus =
+  | { state: "loading"; url: string }
+  | { state: "ready"; url: string }
+  | { state: "error"; url: string; message: string };
 
 const friendlyErrorReplacements: Array<[RegExp, string]> = [
   [/\bOAuth\b/gi, "sign-in"],
@@ -164,6 +176,14 @@ function friendlyErrorMessage(message: string) {
     (copy, [pattern, replacement]) => copy.replace(pattern, replacement),
     message
   );
+}
+
+function linkHostname(value: string) {
+  try {
+    return new URL(value).hostname;
+  } catch {
+    return value;
+  }
 }
 
 function scheduleErrorMessage(item: ScheduledPostSummary) {
@@ -323,6 +343,13 @@ export function SkejApp() {
   const [actionError, setActionError] = React.useState<string | null>(null);
   const [actionMessage, setActionMessage] = React.useState<string | null>(null);
   const [profileOpen, setProfileOpen] = React.useState(false);
+  const [linkPreviewStatuses, setLinkPreviewStatuses] = React.useState<
+    Record<number, LinkPreviewStatus>
+  >({});
+  const [linkPreviewRetryNonce, setLinkPreviewRetryNonce] = React.useState(0);
+  const automaticLinkURLs = React.useRef(new Map<number, string>());
+  const automaticLinkAccounts = React.useRef(new Map<number, string>());
+  const suppressedLinkURLs = React.useRef(new Map<number, string>());
 
   const issues = React.useMemo(() => validateComposerDraft(draft), [draft]);
   const firstPostCount = countGraphemes(draft.posts[0]?.text ?? "");
@@ -490,6 +517,113 @@ export function SkejApp() {
     };
   }, [calendarOpen]);
 
+  React.useEffect(() => {
+    if (!selectedAccountDid) return;
+
+    const timers: number[] = [];
+    const controllers: AbortController[] = [];
+
+    draft.posts.forEach((post, index) => {
+      const url = automaticLinkPreviewURL(post);
+      const previousAutomaticURL = automaticLinkURLs.current.get(index);
+
+      if (!url) {
+        suppressedLinkURLs.current.delete(index);
+        if (shouldRemoveAutomaticLinkPreview(post, previousAutomaticURL)) {
+          automaticLinkURLs.current.delete(index);
+          automaticLinkAccounts.current.delete(index);
+          setDraft((current) => ({
+            ...current,
+            posts: current.posts.map((entry, entryIndex) =>
+              entryIndex === index ? { ...entry, embed: undefined } : entry
+            ),
+          }));
+        }
+        setLinkPreviewStatuses((current) => {
+          if (!(index in current)) return current;
+          const next = { ...current };
+          delete next[index];
+          return next;
+        });
+        return;
+      }
+
+      if (suppressedLinkURLs.current.get(index) === url) return;
+      if (suppressedLinkURLs.current.get(index) !== url) {
+        suppressedLinkURLs.current.delete(index);
+      }
+      if (
+        post.embed?.external &&
+        !previousAutomaticURL
+      ) {
+        return;
+      }
+      if (
+        previousAutomaticURL === url &&
+        automaticLinkAccounts.current.get(index) === selectedAccountDid &&
+        post.embed?.external?.uri === url
+      ) {
+        return;
+      }
+
+      setLinkPreviewStatuses((current) => ({
+        ...current,
+        [index]: { state: "loading", url },
+      }));
+      const controller = new AbortController();
+      controllers.push(controller);
+      timers.push(
+        window.setTimeout(() => {
+          void hydrateLinkPreview(selectedAccountDid, url, controller.signal)
+            .then((embed) => {
+              if (controller.signal.aborted) return;
+              automaticLinkURLs.current.set(index, url);
+              automaticLinkAccounts.current.set(index, selectedAccountDid);
+              setDraft((current) => ({
+                ...current,
+                posts: current.posts.map((entry, entryIndex) => {
+                  if (
+                    entryIndex !== index ||
+                    !canApplyAutomaticLinkPreview(
+                      entry,
+                      url,
+                      previousAutomaticURL
+                    )
+                  ) {
+                    return entry;
+                  }
+                  return { ...entry, embed };
+                }),
+              }));
+              setLinkPreviewStatuses((current) => ({
+                ...current,
+                [index]: { state: "ready", url },
+              }));
+            })
+            .catch((error: unknown) => {
+              if (controller.signal.aborted) return;
+              setLinkPreviewStatuses((current) => ({
+                ...current,
+                [index]: {
+                  state: "error",
+                  url,
+                  message:
+                    error instanceof Error
+                      ? error.message
+                      : "The preview could not be loaded.",
+                },
+              }));
+            });
+        }, LINK_PREVIEW_DEBOUNCE_MS)
+      );
+    });
+
+    return () => {
+      timers.forEach(window.clearTimeout);
+      controllers.forEach((controller) => controller.abort());
+    };
+  }, [draft.posts, linkPreviewRetryNonce, selectedAccountDid]);
+
   function updatePost(index: number, text: string) {
     setDraft((current) => ({
       ...current,
@@ -510,13 +644,59 @@ export function SkejApp() {
   }
 
   function removeThreadPost(index: number) {
+    automaticLinkURLs.current.clear();
+    automaticLinkAccounts.current.clear();
+    suppressedLinkURLs.current.clear();
+    setLinkPreviewStatuses({});
     setDraft((current) => ({
       ...current,
       posts: current.posts.filter((_, postIndex) => postIndex !== index),
     }));
   }
 
+  function removeLinkPreview(index: number) {
+    const url = firstHTTPURL(draft.posts[index]?.text ?? "");
+    if (url) suppressedLinkURLs.current.set(index, url);
+    automaticLinkURLs.current.delete(index);
+    automaticLinkAccounts.current.delete(index);
+    setLinkPreviewStatuses((current) => {
+      const next = { ...current };
+      delete next[index];
+      return next;
+    });
+    setDraft((current) => ({
+      ...current,
+      posts: current.posts.map((post, postIndex) =>
+        postIndex === index ? { ...post, embed: undefined } : post
+      ),
+    }));
+  }
+
+  function keepLinkPreviewManual(index: number) {
+    const url = firstHTTPURL(draft.posts[index]?.text ?? "");
+    if (url) suppressedLinkURLs.current.set(index, url);
+    automaticLinkURLs.current.delete(index);
+    automaticLinkAccounts.current.delete(index);
+    setLinkPreviewStatuses((current) => {
+      const next = { ...current };
+      delete next[index];
+      return next;
+    });
+  }
+
+  function retryLinkPreview(index: number) {
+    const url = firstHTTPURL(draft.posts[index]?.text ?? "");
+    if (url) suppressedLinkURLs.current.delete(index);
+    automaticLinkURLs.current.delete(index);
+    automaticLinkAccounts.current.delete(index);
+    setLinkPreviewRetryNonce((current) => current + 1);
+  }
+
   function resetComposer() {
+    automaticLinkURLs.current.clear();
+    automaticLinkAccounts.current.clear();
+    suppressedLinkURLs.current.clear();
+    setLinkPreviewStatuses({});
     setDraft(emptyDraft());
     setEditingRkey(null);
   }
@@ -910,6 +1090,7 @@ export function SkejApp() {
                   <div className="flex flex-col gap-3">
                     {draft.posts.map((post, index) => {
                       const count = countGraphemes(post.text);
+                      const previewStatus = linkPreviewStatuses[index];
                       return (
                         <div
                           key={index}
@@ -948,6 +1129,48 @@ export function SkejApp() {
                             placeholder="What should future-you say?"
                             aria-label={`Post ${index + 1} text`}
                           />
+                          {previewStatus?.state === "loading" ? (
+                            <div className="flex items-center gap-2 rounded-2xl bg-muted px-3 py-2 text-xs font-bold text-muted-foreground">
+                              <Loader2 className="size-4 animate-spin" />
+                              Loading preview for {linkHostname(previewStatus.url)}…
+                            </div>
+                          ) : null}
+                          {previewStatus?.state === "error" ? (
+                            <div className="flex flex-wrap items-center justify-between gap-2 rounded-2xl border border-border bg-muted px-3 py-2">
+                              <span className="text-xs font-bold text-muted-foreground">
+                                {previewStatus.message}
+                              </span>
+                              <Button
+                                variant="outline"
+                                size="sm"
+                                onClick={() => retryLinkPreview(index)}
+                              >
+                                <RefreshCw data-icon="inline-start" />
+                                Retry
+                              </Button>
+                            </div>
+                          ) : null}
+                          {post.embed?.external ? (
+                            <div className="flex items-start justify-between gap-3 rounded-2xl border border-border bg-card px-3 py-2">
+                              <div className="min-w-0">
+                                <div className="truncate text-sm font-black">
+                                  {post.embed.external.title || post.embed.external.uri}
+                                </div>
+                                <div className="line-clamp-2 text-xs font-semibold text-muted-foreground">
+                                  {post.embed.external.description ||
+                                    linkHostname(post.embed.external.uri)}
+                                </div>
+                              </div>
+                              <Button
+                                variant="ghost"
+                                size="icon"
+                                aria-label={`Remove link preview from post ${index + 1}`}
+                                onClick={() => removeLinkPreview(index)}
+                              >
+                                <X />
+                              </Button>
+                            </div>
+                          ) : null}
                         </div>
                       );
                     })}
@@ -987,13 +1210,16 @@ export function SkejApp() {
                   <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
                     <Button
                       variant="outline"
-                      onClick={() =>
+                      onClick={() => {
+                        keepLinkPreviewManual(0);
                         updateFirstPost((post) => ({
                           ...post,
                           embed: {
-                            ...post.embed,
+                            $type: "app.bsky.embed.images",
                             images: [
-                              ...(post.embed?.images ?? []),
+                              ...(post.embed?.$type === "app.bsky.embed.images"
+                                ? post.embed.images ?? []
+                                : []),
                               {
                                 id: `draft-image-${Date.now()}`,
                                 alt: "",
@@ -1001,27 +1227,28 @@ export function SkejApp() {
                               },
                             ],
                           },
-                        }))
-                      }
+                        }));
+                      }}
                     >
                       <ImagePlus data-icon="inline-start" />
                       Images
                     </Button>
                     <Button
                       variant="outline"
-                      onClick={() =>
+                      onClick={() => {
+                        keepLinkPreviewManual(0);
                         updateFirstPost((post) => ({
                           ...post,
                           embed: {
-                            ...post.embed,
+                            $type: "app.bsky.embed.external",
                             external: post.embed?.external ?? {
                               uri: "https://skej.at",
                               title: "Skej",
                               description: "Plan Bluesky posts ahead with Skej.",
                             },
                           },
-                        }))
-                      }
+                        }));
+                      }}
                     >
                       <Link2 data-icon="inline-start" />
                       Link card
@@ -1046,53 +1273,59 @@ export function SkejApp() {
                         aria-label="External URL"
                         placeholder="https://example.com"
                         value={draft.posts[0].embed.external.uri}
-                        onChange={(event) =>
+                        onChange={(event) => {
+                          keepLinkPreviewManual(0);
                           updateFirstPost((post) => ({
                             ...post,
                             embed: {
                               ...post.embed,
+                              $type: "app.bsky.embed.external",
                               external: {
                                 ...(post.embed?.external ?? { uri: "" }),
                                 uri: event.target.value,
                               },
                             },
-                          }))
-                        }
+                          }));
+                        }}
                       />
                       <div className="grid gap-3 sm:grid-cols-2">
                         <Input
                           aria-label="External title"
                           placeholder="Link title"
                           value={draft.posts[0].embed.external.title ?? ""}
-                          onChange={(event) =>
+                          onChange={(event) => {
+                            keepLinkPreviewManual(0);
                             updateFirstPost((post) => ({
                               ...post,
                               embed: {
                                 ...post.embed,
+                                $type: "app.bsky.embed.external",
                                 external: {
                                   ...(post.embed?.external ?? { uri: "" }),
                                   title: event.target.value,
                                 },
                               },
-                            }))
-                          }
+                            }));
+                          }}
                         />
                         <Input
                           aria-label="External description"
                           placeholder="Link description"
                           value={draft.posts[0].embed.external.description ?? ""}
-                          onChange={(event) =>
+                          onChange={(event) => {
+                            keepLinkPreviewManual(0);
                             updateFirstPost((post) => ({
                               ...post,
                               embed: {
                                 ...post.embed,
+                                $type: "app.bsky.embed.external",
                                 external: {
                                   ...(post.embed?.external ?? { uri: "" }),
                                   description: event.target.value,
                                 },
                               },
-                            }))
-                          }
+                            }));
+                          }}
                         />
                       </div>
                     </div>

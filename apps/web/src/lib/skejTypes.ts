@@ -68,11 +68,32 @@ export interface ImageDraft {
   previewUrl: string;
 }
 
+export interface ATProtoBlobRef {
+  $type: "blob";
+  ref: {
+    $link: string;
+  };
+  mimeType: string;
+  size: number;
+}
+
 export interface ExternalDraft {
   uri: string;
   title?: string;
   description?: string;
-  thumb?: string;
+  thumb?: ATProtoBlobRef;
+}
+
+export interface ExternalEmbedContent {
+  uri: string;
+  title: string;
+  description: string;
+  thumb?: ATProtoBlobRef;
+}
+
+export interface ExternalEmbed {
+  $type: "app.bsky.embed.external";
+  external: ExternalEmbedContent;
 }
 
 export interface QuoteDraft {
@@ -96,6 +117,10 @@ export interface PostPlan {
   facets?: RichFacet[];
   reply?: ReplyDraft;
   embed?: {
+    $type?:
+      | "app.bsky.embed.external"
+      | "app.bsky.embed.images"
+      | "app.bsky.embed.record";
     images?: ImageDraft[];
     external?: ExternalDraft;
     record?: QuoteDraft;
@@ -103,6 +128,10 @@ export interface PostPlan {
   langs?: string[];
   labels?: string[];
   tags?: string[];
+}
+
+export interface LinkPreviewRequest {
+  url: string;
 }
 
 export interface SkejScheduleRecord {

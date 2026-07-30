@@ -6,6 +6,7 @@ import {
   BrandProfile,
   BrandSummary,
   GrantGranteeType,
+  ExternalEmbed,
   ManagedAccount,
   ScheduleStatus,
   ScheduledPostSummary,
@@ -199,6 +200,18 @@ export async function recordScheduleView(did: string, rkey: string): Promise<voi
     `/v1/accounts/${didPath(did)}/schedules/${encodeURIComponent(rkey)}/view`,
     { method: "POST" }
   );
+}
+
+export async function hydrateLinkPreview(
+  did: string,
+  url: string,
+  signal?: AbortSignal
+): Promise<ExternalEmbed> {
+  return requestJSON<ExternalEmbed>(`/v1/accounts/${didPath(did)}/link-preview`, {
+    method: "POST",
+    body: JSON.stringify({ url }),
+    signal,
+  });
 }
 
 export async function createSchedule(
