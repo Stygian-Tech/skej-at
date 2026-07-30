@@ -76,6 +76,43 @@ public struct RetryState: Codable, Equatable, Sendable {
         self.nextAttemptAt = nextAttemptAt
         self.maxAttempts = maxAttempts
     }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        attemptCount = Self.decodeInteger(
+            from: container,
+            forKey: .attemptCount,
+            defaultValue: 0
+        )
+        lastAttemptAt = try container.decodeIfPresent(String.self, forKey: .lastAttemptAt)
+        nextAttemptAt = try container.decodeIfPresent(String.self, forKey: .nextAttemptAt)
+        maxAttempts = Self.decodeInteger(
+            from: container,
+            forKey: .maxAttempts,
+            defaultValue: 8
+        )
+    }
+
+    private static func decodeInteger(
+        from container: KeyedDecodingContainer<CodingKeys>,
+        forKey key: CodingKeys,
+        defaultValue: Int
+    ) -> Int {
+        if let value = try? container.decode(Int.self, forKey: key) {
+            return value
+        }
+        if let legacyBoolean = try? container.decode(Bool.self, forKey: key) {
+            return legacyBoolean ? 1 : 0
+        }
+        return defaultValue
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case attemptCount
+        case lastAttemptAt
+        case nextAttemptAt
+        case maxAttempts
+    }
 }
 
 public struct ScheduleDependency: Codable, Equatable, Sendable {
