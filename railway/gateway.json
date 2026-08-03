@@ -12,7 +12,7 @@
     "healthcheckPath": "/health",
     "healthcheckTimeout": 600,
     "restartPolicyType": "ALWAYS",
-    "overlapSeconds": "0",
-    "drainingSeconds": "15"
+    "overlapSeconds": 0,
+    "drainingSeconds": 15
   }
 }
