@@ -54,19 +54,19 @@ Hosted defaults:
 | --- | --- | --- | --- | --- |
 | Local | `http://127.0.0.1:3000` | `http://127.0.0.1:8080` | `local` | `http://127.0.0.1:3000/oauth/callback` |
 | Dev | `https://testing.skej.at` | `https://api.testing.skej.at` | `dev` | `https://testing.skej.at/oauth/callback` |
-| Prod | `https://skej.at` | `https://skej-at-prod-gateway.fly.dev` | `prod` | `https://skej.at/oauth/callback` |
+| Prod | `https://skej.at` | `https://api.skej.at` | `prod` | `https://skej.at/oauth/callback` |
 
 Required hosted web variables:
 
 ```bash
-SKEJ_API_URL=https://skej-at-dev-gateway.fly.dev # dev
+SKEJ_API_URL=https://api.testing.skej.at # dev
 APP_ENV=dev
 NEXT_PUBLIC_APP_ENV=dev
 NEXT_PUBLIC_SITE_URL=https://testing.skej.at
 ```
 
 ```bash
-SKEJ_API_URL=https://skej-at-prod-gateway.fly.dev # prod
+SKEJ_API_URL=https://api.skej.at # prod
 APP_ENV=prod
 NEXT_PUBLIC_APP_ENV=prod
 NEXT_PUBLIC_SITE_URL=https://skej.at
@@ -99,42 +99,15 @@ Run the same checks locally:
 bash scripts/ci.sh
 ```
 
-## Fly Gateway
+## Railway Gateway
 
-The Swift gateway is configured for Fly in `services/skej-api/fly.toml`.
-The Dockerfile is service-local; in the Fly web UI, set the source/root directory
-to `services/skej-api`.
+Railway hosts the Swift gateway in isolated `dev` and `production`
+environments. Each environment has one `Gateway` replica and its own persistent
+SQLite volume mounted at `/var/lib/skej-api/data`.
 
-Default app names:
+Railway deploys `dev` from the `dev` branch and Production from `main` using
+`railway/gateway.json`. GitHub Actions remains the required source validation
+pipeline and does not deploy infrastructure.
 
-- Dev: `skej-at-dev-gateway`
-- Prod: `skej-at-prod-gateway`
-
-Create the persistent SQLite volume once per app before deploying:
-
-```bash
-fly volumes create skej_api_data --app skej-at-dev-gateway --region ams --size 1
-fly volumes create skej_api_data --app skej-at-prod-gateway --region ams --size 1
-```
-
-Deploy manually:
-
-```bash
-bash services/skej-api/deploy.sh dev
-bash services/skej-api/deploy.sh main
-```
-
-CI deploys on `main` and `dev` pushes when gateway files change, or by manual workflow dispatch with `deploy_gateway=true`.
-
-Required GitHub secret:
-
-- `FLY_API_TOKEN`
-
-Optional GitHub secrets:
-
-- `FLY_SKEJ_GATEWAY_APP_DEV`
-- `FLY_SKEJ_GATEWAY_APP_PROD`
-- `SKEJ_PUBLIC_ORIGIN_DEV`
-- `SKEJ_PUBLIC_ORIGIN_PROD`
-- `SKEJ_WEB_ORIGIN_DEV`
-- `SKEJ_WEB_ORIGIN_PROD`
+See [Railway gateway migration and operations](docs/deployment/railway.md) for
+environment variables, SQLite migration, verification, and rollback.

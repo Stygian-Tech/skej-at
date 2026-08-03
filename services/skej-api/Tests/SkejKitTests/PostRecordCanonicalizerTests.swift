@@ -110,6 +110,7 @@ struct PostRecordCanonicalizerTests {
             return
         }
         #expect(linkURI(facets.first) == "https://example.com")
+        #expect(byteRange(facets.first) == 5..<24)
     }
 
     @Test func repairsAlreadyScheduledShadowRecordsBeforePublishing() {
