@@ -14,8 +14,7 @@ ENV GIT_TERMINAL_PROMPT=0
 
 COPY . /build/source
 
-RUN --mount=type=cache,id=skej-swiftpm-cache,target=/root/.cache \
-    set -eux; \
+RUN set -eux; \
     if [ -f /build/source/services/skej-api/Package.swift ]; then \
         package_dir=/build/source/services/skej-api; \
     else \
