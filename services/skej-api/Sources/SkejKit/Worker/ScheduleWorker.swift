@@ -218,7 +218,7 @@ public struct ScheduleWorker: Sendable {
                     if oauthError.error == "invalid_grant" {
                         return ScheduleError(code: .authInvalid, message: "Reconnect this account before publishing.")
                     }
-                    if oauthError.isTransientClientMetadataFailure {
+                    if oauthError.error == "invalid_client_metadata" {
                         return ScheduleError(
                             code: .transientNetwork,
                             message: "OAuth client metadata is temporarily unavailable."
@@ -260,20 +260,6 @@ public struct ScheduleWorker: Sendable {
 
 private struct OAuthErrorResponse: Decodable {
     let error: String
-    let errorDescription: String?
-
-    enum CodingKeys: String, CodingKey {
-        case error
-        case errorDescription = "error_description"
-    }
-
-    var isTransientClientMetadataFailure: Bool {
-        guard error == "invalid_client_metadata", let description = errorDescription?.lowercased() else {
-            return false
-        }
-        return ["tls error", "timed out", "timeout", "temporarily", "unavailable", "connection", "dns"]
-            .contains { description.contains($0) }
-    }
 }
 
 public enum Timestamp {

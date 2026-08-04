@@ -7,7 +7,7 @@ import Testing
 struct WorkerTests {
     @Test func workerRetriesTemporaryOAuthClientMetadataFailure() {
         let body =
-            #"{"error":"invalid_client_metadata","error_description":"Unable to obtain client metadata: TLS error"}"#
+            #"{"error":"invalid_client_metadata","error_description":"Unable to obtain client metadata"}"#
 
         let error = ScheduleWorker.classify(HTTPClientError.badStatus(400, body, [:]))
 
