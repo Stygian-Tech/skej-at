@@ -146,12 +146,12 @@ public struct ScheduleWorker: Sendable {
         } catch let error as ScheduleError {
             await handlePublishError(error, job: job, now: now, nowString: nowString)
         } catch {
-            await handlePublishError(classify(error), job: job, now: now, nowString: nowString)
+            await handlePublishError(Self.classify(error), job: job, now: now, nowString: nowString)
         }
     }
 
     private func handlePublishError(_ error: ScheduleError, job: ScheduledJob, now: Date, nowString: String) async {
-        let shouldRetry = isRetryable(error) && job.attempts < maxAttempts
+        let shouldRetry = Self.isRetryable(error) && job.attempts < maxAttempts
         if var record = try? await pdsClient.getSchedule(did: job.did, rkey: job.rkey) {
             record.status = shouldRetry ? .scheduled : .failed
             record.lastError = error
@@ -205,7 +205,7 @@ public struct ScheduleWorker: Sendable {
         }
     }
 
-    private func classify(_ error: Error) -> ScheduleError {
+    static func classify(_ error: Error) -> ScheduleError {
         if case PDSClientError.notConfigured = error {
             return ScheduleError(code: .authInvalid, message: "Reconnect this account before publishing.")
         }
@@ -214,6 +214,17 @@ public struct ScheduleWorker: Sendable {
                 return ScheduleError(code: .authInvalid, message: "Reconnect this account before publishing.")
             }
             if status == 400 {
+                if let oauthError = try? JSONDecoder().decode(OAuthErrorResponse.self, from: Data(body.utf8)) {
+                    if oauthError.error == "invalid_grant" {
+                        return ScheduleError(code: .authInvalid, message: "Reconnect this account before publishing.")
+                    }
+                    if oauthError.isTransientClientMetadataFailure {
+                        return ScheduleError(
+                            code: .transientNetwork,
+                            message: "OAuth client metadata is temporarily unavailable."
+                        )
+                    }
+                }
                 return ScheduleError(code: .recordInvalid, message: body.isEmpty ? "PDS rejected the record." : body)
             }
             if status == 429 {
@@ -230,7 +241,7 @@ public struct ScheduleWorker: Sendable {
         return ScheduleError(code: .unknown, message: String(describing: error))
     }
 
-    private func isRetryable(_ error: ScheduleError) -> Bool {
+    static func isRetryable(_ error: ScheduleError) -> Bool {
         switch error.classification {
         case .transientNetwork, .rateLimited, .unknown:
             true
@@ -244,6 +255,24 @@ public struct ScheduleWorker: Sendable {
         let base = min(pow(2.0, Double(capped)) * 60.0, 60.0 * 60.0)
         let jitter = Double.random(in: 0...30)
         return Timestamp.iso8601(now.addingTimeInterval(base + jitter))
+    }
+}
+
+private struct OAuthErrorResponse: Decodable {
+    let error: String
+    let errorDescription: String?
+
+    enum CodingKeys: String, CodingKey {
+        case error
+        case errorDescription = "error_description"
+    }
+
+    var isTransientClientMetadataFailure: Bool {
+        guard error == "invalid_client_metadata", let description = errorDescription?.lowercased() else {
+            return false
+        }
+        return ["tls error", "timed out", "timeout", "temporarily", "unavailable", "connection", "dns"]
+            .contains { description.contains($0) }
     }
 }
 

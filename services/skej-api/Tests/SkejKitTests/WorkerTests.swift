@@ -1,10 +1,29 @@
 import Foundation
 import Logging
-import SkejKit
+@testable import SkejKit
 import Testing
 
 @Suite
 struct WorkerTests {
+    @Test func workerRetriesTemporaryOAuthClientMetadataFailure() {
+        let body =
+            #"{"error":"invalid_client_metadata","error_description":"Unable to obtain client metadata: TLS error"}"#
+
+        let error = ScheduleWorker.classify(HTTPClientError.badStatus(400, body, [:]))
+
+        #expect(error.classification == .transientNetwork)
+        #expect(ScheduleWorker.isRetryable(error))
+    }
+
+    @Test func workerRequiresReauthForExpiredOAuthGrant() {
+        let body = #"{"error":"invalid_grant","error_description":"Session expired"}"#
+
+        let error = ScheduleWorker.classify(HTTPClientError.badStatus(400, body, [:]))
+
+        #expect(error.classification == .authInvalid)
+        #expect(!ScheduleWorker.isRetryable(error))
+    }
+
     @Test func workerPublishesAndRetainsScheduleRecord() async throws {
         let store = try SQLiteStore(path: ":memory:")
         try await store.migrate()
