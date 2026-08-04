@@ -58,7 +58,7 @@ filter_changed() {
 filter_changed gateway \
   'services/skej-api/**' \
   'scripts/ci-swift.sh' \
-  'scripts/fly-deploy-gateway.sh' \
+  'railway/gateway.json' \
   '.github/workflows/ci.yml' \
   '.dockerignore'
 

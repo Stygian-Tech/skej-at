@@ -3,6 +3,7 @@
 #elseif canImport(CSQLite)
 @preconcurrency import CSQLite
 #endif
+@preconcurrency import Crypto
 import Foundation
 
 private let sqliteTransient = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
@@ -60,23 +61,56 @@ public actor SQLiteStore {
                 did TEXT NOT NULL,
                 rkey TEXT NOT NULL,
                 scheduled_for TEXT NOT NULL,
+                scheduled_at TEXT,
                 status TEXT NOT NULL,
                 attempts INTEGER NOT NULL DEFAULT 0,
                 locked_until TEXT,
                 last_error TEXT,
+                next_attempt_at TEXT,
+                last_attempt_at TEXT,
+                publish_rkey TEXT,
+                record_type TEXT,
                 published_uri TEXT,
                 published_cid TEXT,
+                depends_on_schedule_uri TEXT,
+                parent_published_uri TEXT,
                 updated_at TEXT NOT NULL,
                 PRIMARY KEY (did, rkey)
             );
             CREATE INDEX IF NOT EXISTS scheduled_jobs_due_idx
-                ON scheduled_jobs (status, scheduled_for);
+                ON scheduled_jobs (status, scheduled_at, scheduled_for);
             CREATE TABLE IF NOT EXISTS pds_schedule_records (
                 did TEXT NOT NULL,
                 rkey TEXT NOT NULL,
                 record_json TEXT NOT NULL,
                 updated_at TEXT NOT NULL,
                 PRIMARY KEY (did, rkey)
+            );
+            CREATE TABLE IF NOT EXISTS pds_protocol_records (
+                did TEXT NOT NULL,
+                collection TEXT NOT NULL,
+                rkey TEXT NOT NULL,
+                record_json TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                PRIMARY KEY (did, collection, rkey)
+            );
+            CREATE TABLE IF NOT EXISTS managed_accounts (
+                did TEXT PRIMARY KEY,
+                handle TEXT,
+                display_name TEXT,
+                avatar TEXT,
+                pds_endpoint TEXT,
+                status TEXT NOT NULL,
+                is_default INTEGER NOT NULL DEFAULT 0,
+                updated_at TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS audit_events (
+                id TEXT PRIMARY KEY,
+                did TEXT NOT NULL,
+                schedule_rkey TEXT,
+                action TEXT NOT NULL,
+                message TEXT NOT NULL,
+                created_at TEXT NOT NULL
             );
             """
         )
@@ -86,6 +120,13 @@ public actor SQLiteStore {
         try addColumnIfMissing(table: "oauth_states", column: "dpop_key_json", definition: "TEXT")
         try addColumnIfMissing(table: "web_sessions", column: "display_name", definition: "TEXT")
         try addColumnIfMissing(table: "web_sessions", column: "avatar", definition: "TEXT")
+        try addColumnIfMissing(table: "scheduled_jobs", column: "scheduled_at", definition: "TEXT")
+        try addColumnIfMissing(table: "scheduled_jobs", column: "next_attempt_at", definition: "TEXT")
+        try addColumnIfMissing(table: "scheduled_jobs", column: "last_attempt_at", definition: "TEXT")
+        try addColumnIfMissing(table: "scheduled_jobs", column: "publish_rkey", definition: "TEXT")
+        try addColumnIfMissing(table: "scheduled_jobs", column: "record_type", definition: "TEXT")
+        try addColumnIfMissing(table: "scheduled_jobs", column: "depends_on_schedule_uri", definition: "TEXT")
+        try addColumnIfMissing(table: "scheduled_jobs", column: "parent_published_uri", definition: "TEXT")
     }
 
     public func createOAuthState(
@@ -183,7 +224,77 @@ public actor SQLiteStore {
                 (did, handle, token_json, dpop_key_json, updated_at)
             VALUES (?, ?, ?, ?, ?)
             """,
-            [session.did, session.handle, session.tokenJSON, session.dpopKeyJSON, now]
+            [
+                session.did,
+                session.handle,
+                try encryptAuthMaterial(session.tokenJSON),
+                try encryptAuthMaterial(session.dpopKeyJSON),
+                now,
+            ]
+        )
+    }
+
+    public func upsertManagedAccount(_ account: ManagedAccount, now: String) throws {
+        if account.isDefault {
+            try run("UPDATE managed_accounts SET is_default = 0 WHERE did != ?", [account.did])
+        }
+        try run(
+            """
+            INSERT INTO managed_accounts
+                (did, handle, display_name, avatar, pds_endpoint, status, is_default, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(did) DO UPDATE SET
+                handle = excluded.handle,
+                display_name = excluded.display_name,
+                avatar = excluded.avatar,
+                pds_endpoint = excluded.pds_endpoint,
+                status = excluded.status,
+                is_default = CASE
+                    WHEN excluded.is_default = 1 THEN 1
+                    ELSE managed_accounts.is_default
+                END,
+                updated_at = excluded.updated_at
+            """,
+            [
+                account.did,
+                account.handle,
+                account.displayName,
+                account.avatar,
+                account.pdsEndpoint,
+                account.status.rawValue,
+                account.isDefault ? "1" : "0",
+                now,
+            ]
+        )
+    }
+
+    public func listManagedAccounts() throws -> [ManagedAccount] {
+        try query(
+            """
+            SELECT did, handle, display_name, avatar, pds_endpoint, status, is_default
+            FROM managed_accounts
+            ORDER BY is_default DESC, handle ASC, did ASC
+            """,
+            []
+        ).compactMap(account(from:))
+    }
+
+    public func managedAccount(did: String) throws -> ManagedAccount? {
+        try query(
+            """
+            SELECT did, handle, display_name, avatar, pds_endpoint, status, is_default
+            FROM managed_accounts
+            WHERE did = ?
+            LIMIT 1
+            """,
+            [did]
+        ).first.flatMap(account(from:))
+    }
+
+    public func markAccountNeedsReauth(did: String, now: String) throws {
+        try run(
+            "UPDATE managed_accounts SET status = 'needs_reauth', updated_at = ? WHERE did = ?",
+            [now, did]
         )
     }
 
@@ -200,8 +311,8 @@ public actor SQLiteStore {
         return OAuthSessionRecord(
             did: did,
             handle: row["handle"],
-            tokenJSON: tokenJSON,
-            dpopKeyJSON: dpopKeyJSON
+            tokenJSON: try decryptAuthMaterial(tokenJSON),
+            dpopKeyJSON: try decryptAuthMaterial(dpopKeyJSON)
         )
     }
 
@@ -211,6 +322,7 @@ public actor SQLiteStore {
         record: SkejScheduleRecord,
         now: String
     ) throws {
+        try writeProtocolRecord(did: did, collection: "at.skej.schedule", rkey: rkey, record: record, now: now)
         let data = try encoder.encode(record)
         guard let json = String(data: data, encoding: .utf8) else {
             throw SQLiteStoreError.statement(message: "Could not encode schedule record")
@@ -228,6 +340,9 @@ public actor SQLiteStore {
     }
 
     public func scheduleRecord(did: String, rkey: String) throws -> SkejScheduleRecord? {
+        if let record = try protocolRecord(did: did, collection: "at.skej.schedule", rkey: rkey, as: SkejScheduleRecord.self) {
+            return record
+        }
         let rows = try query(
             """
             SELECT record_json
@@ -244,6 +359,8 @@ public actor SQLiteStore {
     }
 
     public func listScheduleRecords(did: String) throws -> [String: SkejScheduleRecord] {
+        let protocolRecords = try listProtocolRecords(did: did, collection: "at.skej.schedule", as: SkejScheduleRecord.self)
+        if !protocolRecords.isEmpty { return protocolRecords }
         let rows = try query(
             """
             SELECT rkey, record_json
@@ -264,32 +381,121 @@ public actor SQLiteStore {
     }
 
     public func deleteScheduleRecord(did: String, rkey: String) throws {
+        try run("DELETE FROM pds_protocol_records WHERE did = ? AND collection = ? AND rkey = ?", [did, "at.skej.schedule", rkey])
         try run("DELETE FROM pds_schedule_records WHERE did = ? AND rkey = ?", [did, rkey])
     }
 
+    public func writeProtocolRecord<Value: Codable>(
+        did: String,
+        collection: String,
+        rkey: String,
+        record: Value,
+        now: String
+    ) throws {
+        let data = try encoder.encode(record)
+        guard let json = String(data: data, encoding: .utf8) else {
+            throw SQLiteStoreError.statement(message: "Could not encode protocol record")
+        }
+        try run(
+            """
+            INSERT INTO pds_protocol_records (did, collection, rkey, record_json, updated_at)
+            VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT(did, collection, rkey) DO UPDATE SET
+                record_json = excluded.record_json,
+                updated_at = excluded.updated_at
+            """,
+            [did, collection, rkey, json, now]
+        )
+    }
+
+    public func protocolRecord<Value: Codable>(
+        did: String,
+        collection: String,
+        rkey: String,
+        as type: Value.Type
+    ) throws -> Value? {
+        let rows = try query(
+            """
+            SELECT record_json
+            FROM pds_protocol_records
+            WHERE did = ? AND collection = ? AND rkey = ?
+            LIMIT 1
+            """,
+            [did, collection, rkey]
+        )
+        guard let json = rows.first?["record_json"],
+              let data = json.data(using: .utf8)
+        else { return nil }
+        return try decoder.decode(type, from: data)
+    }
+
+    public func listProtocolRecords<Value: Codable>(
+        did: String,
+        collection: String,
+        as type: Value.Type
+    ) throws -> [String: Value] {
+        let rows = try query(
+            """
+            SELECT rkey, record_json
+            FROM pds_protocol_records
+            WHERE did = ? AND collection = ?
+            """,
+            [did, collection]
+        )
+        var records: [String: Value] = [:]
+        for row in rows {
+            guard let rkey = row["rkey"],
+                  let json = row["record_json"],
+                  let data = json.data(using: .utf8)
+            else { continue }
+            records[rkey] = try decoder.decode(type, from: data)
+        }
+        return records
+    }
+
     public func upsertScheduleJob(_ job: ScheduledJob, now: String) throws {
+        let errorJSON = try job.lastError.map(encodeJSON)
         try run(
             """
             INSERT INTO scheduled_jobs
-                (did, rkey, scheduled_for, status, attempts, last_error, published_uri, published_cid, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                (
+                    did, rkey, scheduled_for, scheduled_at, status, attempts,
+                    last_error, next_attempt_at, last_attempt_at, publish_rkey, record_type,
+                    published_uri, published_cid, depends_on_schedule_uri, parent_published_uri, updated_at
+                )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(did, rkey) DO UPDATE SET
                 scheduled_for = excluded.scheduled_for,
+                scheduled_at = excluded.scheduled_at,
                 status = excluded.status,
+                attempts = excluded.attempts,
                 last_error = excluded.last_error,
+                next_attempt_at = excluded.next_attempt_at,
+                last_attempt_at = excluded.last_attempt_at,
+                publish_rkey = excluded.publish_rkey,
+                record_type = excluded.record_type,
                 published_uri = excluded.published_uri,
                 published_cid = excluded.published_cid,
+                depends_on_schedule_uri = excluded.depends_on_schedule_uri,
+                parent_published_uri = excluded.parent_published_uri,
                 updated_at = excluded.updated_at
             """,
             [
                 job.did,
                 job.rkey,
-                job.scheduledFor,
+                job.scheduledAt,
+                job.scheduledAt,
                 job.status.rawValue,
                 String(job.attempts),
-                job.lastError,
+                errorJSON,
+                job.nextAttemptAt,
+                job.lastAttemptAt,
+                job.publishRkey,
+                job.recordType,
                 job.publishedUri,
                 job.publishedCid,
+                job.dependsOnScheduleUri,
+                job.parentPublishedUri,
                 now,
             ]
         )
@@ -298,10 +504,12 @@ public actor SQLiteStore {
     public func listScheduleJobs(did: String) throws -> [ScheduledJob] {
         try query(
             """
-            SELECT did, rkey, scheduled_for, status, attempts, last_error, published_uri, published_cid
+            SELECT did, rkey, COALESCE(scheduled_at, scheduled_for) AS scheduled_at, status, attempts,
+                   last_error, next_attempt_at, last_attempt_at, publish_rkey, record_type,
+                   published_uri, published_cid, depends_on_schedule_uri, parent_published_uri
             FROM scheduled_jobs
-            WHERE did = ? AND status != 'cancelled'
-            ORDER BY scheduled_for ASC
+            WHERE did = ?
+            ORDER BY scheduled_at ASC
             """,
             [did]
         ).compactMap(job(from:))
@@ -310,7 +518,9 @@ public actor SQLiteStore {
     public func scheduleJob(did: String, rkey: String) throws -> ScheduledJob? {
         try query(
             """
-            SELECT did, rkey, scheduled_for, status, attempts, last_error, published_uri, published_cid
+            SELECT did, rkey, COALESCE(scheduled_at, scheduled_for) AS scheduled_at, status, attempts,
+                   last_error, next_attempt_at, last_attempt_at, publish_rkey, record_type,
+                   published_uri, published_cid, depends_on_schedule_uri, parent_published_uri
             FROM scheduled_jobs
             WHERE did = ? AND rkey = ?
             LIMIT 1
@@ -326,23 +536,67 @@ public actor SQLiteStore {
     public func claimDueJobs(now: String, limit: Int = 10) throws -> [ScheduledJob] {
         let jobs = try query(
             """
-            SELECT did, rkey, scheduled_for, status, attempts, last_error, published_uri, published_cid
+            SELECT did, rkey, COALESCE(scheduled_at, scheduled_for) AS scheduled_at, status, attempts,
+                   last_error, next_attempt_at, last_attempt_at, publish_rkey, record_type,
+                   published_uri, published_cid, depends_on_schedule_uri, parent_published_uri
             FROM scheduled_jobs
-            WHERE status = 'scheduled' AND scheduled_for <= ?
-            ORDER BY scheduled_for ASC
+            WHERE status = 'scheduled'
+                AND COALESCE(scheduled_at, scheduled_for) <= ?
+                AND (next_attempt_at IS NULL OR next_attempt_at <= ?)
+            ORDER BY scheduled_at ASC
             LIMIT ?
             """,
-            [now, String(limit)]
+            [now, now, String(limit)]
         ).compactMap(job(from:))
 
         for job in jobs {
             try run(
-                "UPDATE scheduled_jobs SET status = 'publishing', attempts = attempts + 1, updated_at = ? WHERE did = ? AND rkey = ?",
-                [now, job.did, job.rkey]
+                """
+                UPDATE scheduled_jobs
+                SET status = 'publishing',
+                    attempts = attempts + 1,
+                    last_attempt_at = ?,
+                    updated_at = ?
+                WHERE did = ? AND rkey = ?
+                """,
+                [now, now, job.did, job.rkey]
             )
         }
 
         return jobs
+    }
+
+    public func blockedJobs() throws -> [ScheduledJob] {
+        try query(
+            """
+            SELECT did, rkey, COALESCE(scheduled_at, scheduled_for) AS scheduled_at, status, attempts,
+                   last_error, next_attempt_at, last_attempt_at, publish_rkey, record_type,
+                   published_uri, published_cid, depends_on_schedule_uri, parent_published_uri
+            FROM scheduled_jobs
+            WHERE status = 'blocked'
+            ORDER BY scheduled_at ASC
+            """,
+            []
+        ).compactMap(job(from:))
+    }
+
+    public func markJobScheduled(
+        did: String,
+        rkey: String,
+        parentPublishedUri: String?,
+        now: String
+    ) throws {
+        try run(
+            """
+            UPDATE scheduled_jobs
+            SET status = 'scheduled',
+                parent_published_uri = ?,
+                last_error = NULL,
+                updated_at = ?
+            WHERE did = ? AND rkey = ?
+            """,
+            [parentPublishedUri, now, did, rkey]
+        )
     }
 
     public func markJobPublished(
@@ -354,40 +608,175 @@ public actor SQLiteStore {
         try run(
             """
             UPDATE scheduled_jobs
-            SET status = 'published', published_uri = ?, published_cid = ?, last_error = NULL, updated_at = ?
+            SET status = 'published',
+                published_uri = ?,
+                published_cid = ?,
+                last_error = NULL,
+                next_attempt_at = NULL,
+                updated_at = ?
             WHERE did = ? AND rkey = ?
             """,
             [published.uri, published.cid, now, did, rkey]
         )
     }
 
-    public func markJobFailed(did: String, rkey: String, error: String, now: String) throws {
+    public func markJobFailed(did: String, rkey: String, error: ScheduleError, now: String) throws {
         try run(
             """
             UPDATE scheduled_jobs
             SET status = 'failed', last_error = ?, updated_at = ?
             WHERE did = ? AND rkey = ?
             """,
-            [error, now, did, rkey]
+            [try encodeJSON(error), now, did, rkey]
+        )
+    }
+
+    public func markJobRetry(
+        did: String,
+        rkey: String,
+        error: ScheduleError,
+        nextAttemptAt: String,
+        now: String
+    ) throws {
+        try run(
+            """
+            UPDATE scheduled_jobs
+            SET status = 'scheduled',
+                last_error = ?,
+                next_attempt_at = ?,
+                updated_at = ?
+            WHERE did = ? AND rkey = ?
+            """,
+            [try encodeJSON(error), nextAttemptAt, now, did, rkey]
+        )
+    }
+
+    public func markJobBlocked(
+        did: String,
+        rkey: String,
+        error: ScheduleError,
+        now: String
+    ) throws {
+        try run(
+            """
+            UPDATE scheduled_jobs
+            SET status = 'blocked',
+                last_error = ?,
+                updated_at = ?
+            WHERE did = ? AND rkey = ?
+            """,
+            [try encodeJSON(error), now, did, rkey]
+        )
+    }
+
+    public func insertAuditEvent(
+        did: String,
+        scheduleRkey: String?,
+        action: String,
+        message: String,
+        now: String
+    ) throws {
+        try run(
+            """
+            INSERT INTO audit_events (id, did, schedule_rkey, action, message, created_at)
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            [UUID().uuidString, did, scheduleRkey, action, message, now]
+        )
+    }
+
+    public func listAuditEvents(did: String, limit: Int = 100) throws -> [AuditEvent] {
+        try query(
+            """
+            SELECT id, did, schedule_rkey, action, message, created_at
+            FROM audit_events
+            WHERE did = ?
+            ORDER BY created_at DESC
+            LIMIT ?
+            """,
+            [did, String(limit)]
+        ).compactMap(auditEvent(from:))
+    }
+
+    public func findPublishedSchedule(scheduleUri: String) throws -> (did: String, rkey: String, record: SkejScheduleRecord)? {
+        guard let parsed = parseScheduleURI(scheduleUri) else { return nil }
+        guard let record = try scheduleRecord(did: parsed.did, rkey: parsed.rkey),
+              record.status == .published
+        else { return nil }
+        return (parsed.did, parsed.rkey, record)
+    }
+
+    public func updateParentPublishedUri(
+        did: String,
+        rkey: String,
+        parentPublishedUri: String,
+        now: String
+    ) throws {
+        try run(
+            """
+            UPDATE scheduled_jobs
+            SET parent_published_uri = ?, updated_at = ?
+            WHERE did = ? AND rkey = ?
+            """,
+            [parentPublishedUri, now, did, rkey]
         )
     }
 
     private func job(from row: [String: String]) -> ScheduledJob? {
         guard let did = row["did"],
               let rkey = row["rkey"],
-              let scheduledFor = row["scheduled_for"],
+              let scheduledAt = row["scheduled_at"],
               let rawStatus = row["status"],
-              let status = ScheduleStatus(rawValue: rawStatus)
+              let status = scheduleStatus(from: rawStatus)
         else { return nil }
         return ScheduledJob(
             did: did,
             rkey: rkey,
-            scheduledFor: scheduledFor,
+            scheduledAt: scheduledAt,
             status: status,
             attempts: Int(row["attempts"] ?? "0") ?? 0,
-            lastError: row["last_error"],
+            lastError: decodeJSON(ScheduleError.self, from: row["last_error"]),
+            nextAttemptAt: row["next_attempt_at"],
+            lastAttemptAt: row["last_attempt_at"],
+            publishRkey: row["publish_rkey"] ?? rkey,
+            recordType: row["record_type"] ?? "app.bsky.feed.post",
             publishedUri: row["published_uri"],
-            publishedCid: row["published_cid"]
+            publishedCid: row["published_cid"],
+            dependsOnScheduleUri: row["depends_on_schedule_uri"],
+            parentPublishedUri: row["parent_published_uri"]
+        )
+    }
+
+    private func account(from row: [String: String]) -> ManagedAccount? {
+        guard let did = row["did"],
+              let rawStatus = row["status"],
+              let status = ManagedAccountStatus(rawValue: rawStatus)
+        else { return nil }
+        return ManagedAccount(
+            did: did,
+            handle: row["handle"],
+            displayName: row["display_name"],
+            avatar: row["avatar"],
+            pdsEndpoint: row["pds_endpoint"],
+            status: status,
+            isDefault: row["is_default"] == "1"
+        )
+    }
+
+    private func auditEvent(from row: [String: String]) -> AuditEvent? {
+        guard let id = row["id"],
+              let did = row["did"],
+              let action = row["action"],
+              let message = row["message"],
+              let createdAt = row["created_at"]
+        else { return nil }
+        return AuditEvent(
+            id: id,
+            did: did,
+            scheduleRkey: row["schedule_rkey"],
+            action: action,
+            message: message,
+            createdAt: createdAt
         )
     }
 
@@ -455,6 +844,66 @@ public actor SQLiteStore {
         let columns = try query("PRAGMA table_info(\(table))", [])
         guard !columns.contains(where: { $0["name"] == column }) else { return }
         try exec("ALTER TABLE \(table) ADD COLUMN \(column) \(definition)")
+    }
+
+    private func encodeJSON<T: Encodable>(_ value: T) throws -> String {
+        guard let string = String(data: try encoder.encode(value), encoding: .utf8) else {
+            throw SQLiteStoreError.statement(message: "Could not encode JSON")
+        }
+        return string
+    }
+
+    private func decodeJSON<T: Decodable>(_ type: T.Type, from string: String?) -> T? {
+        guard let string,
+              let data = string.data(using: .utf8)
+        else { return nil }
+        return try? decoder.decode(type, from: data)
+    }
+
+    private func scheduleStatus(from raw: String) -> ScheduleStatus? {
+        raw == "cancelled" ? .canceled : ScheduleStatus(rawValue: raw)
+    }
+
+    private func parseScheduleURI(_ uri: String) -> (did: String, rkey: String)? {
+        guard uri.starts(with: "at://") else { return nil }
+        let parts = uri.dropFirst("at://".count).split(separator: "/").map(String.init)
+        guard parts.count == 3,
+              parts[1] == "at.skej.schedule"
+        else { return nil }
+        return (parts[0], parts[2])
+    }
+
+    private func encryptAuthMaterial(_ plaintext: String) throws -> String {
+        guard let key = authEncryptionKey() else { return plaintext }
+        let sealed = try AES.GCM.seal(Data(plaintext.utf8), using: key)
+        guard let combined = sealed.combined else {
+            throw SQLiteStoreError.statement(message: "Could not encrypt auth material")
+        }
+        return "aesgcm:v1:\(combined.base64EncodedString())"
+    }
+
+    private func decryptAuthMaterial(_ stored: String) throws -> String {
+        guard stored.starts(with: "aesgcm:v1:") else { return stored }
+        guard let key = authEncryptionKey() else {
+            throw SQLiteStoreError.statement(message: "SKEJ_AUTH_ENCRYPTION_KEY is required to decrypt auth material")
+        }
+        let encoded = String(stored.dropFirst("aesgcm:v1:".count))
+        guard let data = Data(base64Encoded: encoded) else {
+            throw SQLiteStoreError.statement(message: "Encrypted auth material is malformed")
+        }
+        let sealed = try AES.GCM.SealedBox(combined: data)
+        let opened = try AES.GCM.open(sealed, using: key)
+        guard let plaintext = String(data: opened, encoding: .utf8) else {
+            throw SQLiteStoreError.statement(message: "Could not decode auth material")
+        }
+        return plaintext
+    }
+
+    private func authEncryptionKey() -> SymmetricKey? {
+        guard let raw = ProcessInfo.processInfo.environment["SKEJ_AUTH_ENCRYPTION_KEY"],
+              !raw.isEmpty
+        else { return nil }
+        return SymmetricKey(data: Data(SHA256.hash(data: Data(raw.utf8))))
     }
 }
 

@@ -1,6 +1,8 @@
 import type { Metadata } from "next";
 import type { Viewport } from "next";
 
+import { EnvironmentBanner } from "@/components/EnvironmentBanner";
+
 import "./globals.css";
 
 const title = "Skej";
@@ -76,7 +78,10 @@ export default function RootLayout({
 }>) {
   return (
     <html lang="en" className="antialiased">
-      <body>{children}</body>
+      <body>
+        <EnvironmentBanner />
+        {children}
+      </body>
     </html>
   );
 }

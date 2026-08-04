@@ -4,16 +4,65 @@
   "defs": {
     "main": {
       "type": "record",
-      "description": "A public, user-owned scheduled Bluesky post or thread stored in the user's PDS until Skej publishes it.",
+      "description": "A public, user-owned scheduled ATProto record retained as operational history after Skej publishes it.",
       "key": "tid",
       "record": {
         "type": "object",
-        "required": ["scheduledFor", "createdAt", "updatedAt", "status", "posts"],
+        "required": [
+          "scheduledAt",
+          "timezonePolicy",
+          "createdAt",
+          "updatedAt",
+          "status",
+          "recordType",
+          "publishRkey",
+          "retry",
+          "posts"
+        ],
         "properties": {
+          "scheduledAt": {
+            "type": "string",
+            "format": "datetime",
+            "description": "UTC instant when Skej should publish the record."
+          },
+          "title": {
+            "type": "string",
+            "maxGraphemes": 120,
+            "maxLength": 512,
+            "description": "User-facing title for identifying this scheduled content in calendars, lists, and operational views."
+          },
+          "teamUri": {
+            "type": "string",
+            "format": "at-uri",
+            "description": "Optional Skej team that governs review and permissions for this schedule."
+          },
+          "createdByDid": {
+            "type": "string",
+            "format": "did",
+            "description": "DID that created or proposed the scheduled content."
+          },
+          "approvedByDid": {
+            "type": "string",
+            "format": "did",
+            "description": "DID that approved the draft for scheduling."
+          },
+          "approvedAt": {
+            "type": "string",
+            "format": "datetime",
+            "description": "Timestamp when the draft was approved for scheduling."
+          },
           "scheduledFor": {
             "type": "string",
             "format": "datetime",
-            "description": "When Skej should publish the post."
+            "description": "Deprecated compatibility field; new records must use scheduledAt."
+          },
+          "timezonePolicy": {
+            "type": "string",
+            "enum": ["absolute_utc", "account_local", "user_local"]
+          },
+          "userTimezone": {
+            "type": "string",
+            "maxLength": 128
           },
           "createdAt": {
             "type": "string",
@@ -25,25 +74,115 @@
           },
           "status": {
             "type": "string",
-            "enum": ["scheduled", "publishing", "published", "failed", "cancelled"]
+            "enum": [
+              "draft",
+              "scheduled",
+              "blocked",
+              "publishing",
+              "published",
+              "failed",
+              "canceled"
+            ]
+          },
+          "recordType": {
+            "type": "string",
+            "description": "ATProto collection to publish, e.g. app.bsky.feed.post."
+          },
+          "shadowRecord": {
+            "type": "unknown",
+            "description": "Exact record payload to publish when provided."
+          },
+          "publishRkey": {
+            "type": "string",
+            "description": "Stable rkey used for idempotent publication."
+          },
+          "publishedUri": {
+            "type": "string",
+            "format": "at-uri"
+          },
+          "publishedCid": {
+            "type": "string"
+          },
+          "retry": {
+            "type": "ref",
+            "ref": "#retryState"
           },
           "lastError": {
-            "type": "string",
-            "maxLength": 8192,
-            "description": "Last worker failure visible to the user for recovery."
+            "type": "ref",
+            "ref": "#scheduleError"
+          },
+          "dependency": {
+            "type": "ref",
+            "ref": "#dependency"
           },
           "posts": {
             "type": "array",
-            "minLength": 1,
+            "minLength": 0,
             "maxLength": 25,
             "items": { "type": "ref", "ref": "#postPlan" }
           }
         }
       }
     },
+    "retryState": {
+      "type": "object",
+      "required": ["attemptCount", "maxAttempts"],
+      "properties": {
+        "attemptCount": { "type": "integer", "minimum": 0 },
+        "lastAttemptAt": { "type": "string", "format": "datetime" },
+        "nextAttemptAt": { "type": "string", "format": "datetime" },
+        "maxAttempts": { "type": "integer", "minimum": 1 }
+      }
+    },
+    "scheduleError": {
+      "type": "object",
+      "required": ["code", "message", "classification"],
+      "properties": {
+        "code": {
+          "type": "string",
+          "enum": [
+            "transient_network",
+            "rate_limited",
+            "auth_invalid",
+            "record_invalid",
+            "parent_missing",
+            "parent_unavailable",
+            "unknown"
+          ]
+        },
+        "message": { "type": "string", "maxLength": 8192 },
+        "classification": {
+          "type": "string",
+          "enum": [
+            "transient_network",
+            "rate_limited",
+            "auth_invalid",
+            "record_invalid",
+            "parent_missing",
+            "parent_unavailable",
+            "unknown"
+          ]
+        },
+        "retryAfter": { "type": "string" }
+      }
+    },
+    "dependency": {
+      "type": "object",
+      "required": ["dependsOnScheduleUri"],
+      "properties": {
+        "dependsOnScheduleUri": {
+          "type": "string",
+          "format": "at-uri"
+        },
+        "parentPublishedUri": {
+          "type": "string",
+          "format": "at-uri"
+        }
+      }
+    },
     "postPlan": {
       "type": "object",
-      "description": "A draft post payload mirroring supported app.bsky.feed.post fields. The worker sets app.bsky.feed.post createdAt at publish time.",
+      "description": "A draft app.bsky.feed.post payload. The worker sets createdAt at publish time unless shadowRecord is supplied.",
       "required": ["text"],
       "properties": {
         "text": {
@@ -82,4 +221,3 @@
     }
   }
 }
-

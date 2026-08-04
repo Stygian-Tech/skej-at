@@ -111,6 +111,37 @@ button svg {
   height: 1rem;
 }
 
+.skej-select-control {
+  appearance: none;
+  background: transparent;
+}
+
+.skej-select-control option {
+  background: #ffffff;
+  color: #231f20;
+}
+
+.dark .skej-select-control option {
+  background: #121016;
+  color: #fbf7fa;
+}
+
+.skej-date-control {
+  color-scheme: dark;
+}
+
+.skej-date-control::-webkit-calendar-picker-indicator {
+  cursor: pointer;
+  height: 100%;
+  margin-right: -0.5rem;
+  opacity: 0;
+  width: 2.75rem;
+}
+
+.skej-date-control::-webkit-datetime-edit {
+  padding: 0;
+}
+
 ::selection {
   background: #b9f6ff;
   color: #142226;

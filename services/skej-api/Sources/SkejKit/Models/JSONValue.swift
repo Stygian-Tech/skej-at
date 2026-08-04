@@ -1,4 +1,5 @@
 import Foundation
+import CoreFoundation
 
 public enum JSONValue: Codable, Equatable, Sendable {
     case string(String)
@@ -38,3 +39,29 @@ public enum JSONValue: Codable, Equatable, Sendable {
     }
 }
 
+public extension Encodable {
+    func skejJSONValue() throws -> JSONValue {
+        let data = try JSONEncoder().encode(self)
+        return try JSONDecoder().decode(JSONValue.self, from: data)
+    }
+}
+
+public func makeJSONValue(from object: Any) throws -> JSONValue {
+    switch object {
+    case let value as String:
+        return .string(value)
+    case let value as NSNumber:
+        if CFGetTypeID(value) == CFBooleanGetTypeID() {
+            return .bool(value.boolValue)
+        }
+        return .number(value.doubleValue)
+    case let value as Bool:
+        return .bool(value)
+    case let value as [Any]:
+        return .array(try value.map(makeJSONValue(from:)))
+    case let value as [String: Any]:
+        return .object(try value.mapValues(makeJSONValue(from:)))
+    default:
+        return .null
+    }
+}

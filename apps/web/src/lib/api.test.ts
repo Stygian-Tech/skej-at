@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, mock } from "bun:test";
 
-import { createSchedule, logout, startOAuth } from "@/lib/api";
+import { createSchedule, hydrateLinkPreview, logout, startOAuth } from "@/lib/api";
 
 const originalFetch = globalThis.fetch;
 
@@ -54,5 +54,40 @@ describe("api client", () => {
     await logout();
 
     expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("hydrates a link preview for the selected account", async () => {
+    const controller = new AbortController();
+    const fetchMock = mock(async (input: RequestInfo | URL, init?: RequestInit) => {
+      expect(String(input)).toBe(
+        "/v1/accounts/did:plc:test/link-preview"
+      );
+      expect(init?.method).toBe("POST");
+      expect(init?.signal).toBe(controller.signal);
+      expect(JSON.parse(String(init?.body))).toEqual({
+        url: "https://example.com/article",
+      });
+      return new Response(
+        JSON.stringify({
+          $type: "app.bsky.embed.external",
+          external: {
+            uri: "https://example.com/article",
+            title: "Example",
+            description: "Description",
+          },
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } }
+      );
+    });
+    globalThis.fetch = fetchMock as unknown as typeof fetch;
+
+    const embed = await hydrateLinkPreview(
+      "did:plc:test",
+      "https://example.com/article",
+      controller.signal
+    );
+
+    expect(embed.$type).toBe("app.bsky.embed.external");
+    expect(embed.external.title).toBe("Example");
   });
 });
