@@ -14,6 +14,10 @@ public protocol LinkPreviewHTTPClient: Sendable {
     func fetch(url: URL, accept: String, maxBytes: Int) async throws -> LinkPreviewHTTPResponse
 }
 
+public protocol LinkPreviewHydrating: Sendable {
+    func hydrate(did: String, url: String) async throws -> ExternalEmbed
+}
+
 public struct LinkPreviewHTTPResponse: Sendable {
     public let body: Data
     public let mimeType: String
@@ -36,7 +40,7 @@ public enum LinkPreviewError: Error, Equatable {
     case invalidResponse
 }
 
-public struct LinkPreviewService: Sendable {
+public struct LinkPreviewService: LinkPreviewHydrating, Sendable {
     private let pdsClient: any PDSClient
     private let http: any LinkPreviewHTTPClient
     private let logger: Logger
@@ -173,7 +177,7 @@ public struct SafeLinkPreviewHTTPClient: LinkPreviewHTTPClient {
     private let timeout: TimeInterval
     private let maxRedirects: Int
 
-    public init(timeout: TimeInterval = 5, maxRedirects: Int = 5) {
+    public init(timeout: TimeInterval = 10, maxRedirects: Int = 5) {
         self.timeout = timeout
         self.maxRedirects = maxRedirects
     }
