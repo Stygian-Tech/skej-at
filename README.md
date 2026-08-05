@@ -99,15 +99,16 @@ Run the same checks locally:
 bash scripts/ci.sh
 ```
 
-## Railway Gateway
+## Railway Hosting
 
-Railway hosts the Swift gateway in isolated `dev` and `production`
-environments. Each environment has one `Gateway` replica and its own persistent
-SQLite volume mounted at `/var/lib/skej-api/data`.
+Railway hosts the Next.js web app and Swift gateway in isolated `dev` and
+`production` environments. Each environment has one stateless `Web` replica
+and one `Gateway` replica with its own persistent SQLite volume mounted at
+`/var/lib/skej-api/data`.
 
 Railway deploys `dev` from the `dev` branch and Production from `main` using
-`railway/gateway.json`. GitHub Actions remains the required source validation
-pipeline and does not deploy infrastructure.
+`railway/web.json` and `railway/gateway.json`. GitHub Actions remains the
+required source validation pipeline and does not deploy infrastructure.
 
 See [Railway gateway migration and operations](docs/deployment/railway.md) for
 environment variables, SQLite migration, verification, and rollback.

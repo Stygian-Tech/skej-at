@@ -14,6 +14,8 @@ const apiBase =
       : hostedApiBase);
 
 const nextConfig: NextConfig = {
+  output: "standalone",
+  outputFileTracingRoot: path.resolve(process.cwd(), "../.."),
   allowedDevOrigins: ["127.0.0.1"],
   env: {
     NEXT_PUBLIC_APP_ENV: appEnv,

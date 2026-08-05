@@ -1,7 +1,7 @@
 # Railway gateway migration and operations
 
-Railway hosts the Swift gateway in one project with isolated `dev` and
-`production` environments.
+Railway hosts the Next.js web app and Swift gateway in one project with
+isolated `dev` and `production` environments.
 
 | Environment | Branch | Web origin | Gateway domain | SQLite volume |
 | --- | --- | --- | --- | --- |
@@ -9,6 +9,10 @@ Railway hosts the Swift gateway in one project with isolated `dev` and
 | Production | `main` | `https://skej.at` | `https://api.skej.at` | Production-only |
 
 ## Service configuration
+
+The stateless `Web` service uses `/railway/web.json`, listens on port 3000, and
+sets the hosted web variables from the root README for its environment. It does
+not mount a volume.
 
 The `Gateway` service uses `/railway/gateway.json` from the repository root and
 must run exactly one replica. Configure these variables in each environment:
