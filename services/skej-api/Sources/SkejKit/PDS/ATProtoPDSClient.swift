@@ -4,11 +4,13 @@ public struct ATProtoPDSClient: PDSClient {
     private let store: SQLiteStore
     private let http: HTTPClient
     private let clientID: String?
+    private let dpopNonces: DPoPNonceStore
 
     public init(store: SQLiteStore, clientID: String? = nil, http: HTTPClient = URLSessionHTTPClient()) {
         self.store = store
         self.clientID = clientID
         self.http = http
+        self.dpopNonces = DPoPNonceStore()
     }
 
     public func writeRecord<Value: Codable & Sendable>(did: String, collection: String, rkey: String, record: Value) async throws {
@@ -106,6 +108,10 @@ public struct ATProtoPDSClient: PDSClient {
         mimeType: String
     ) async throws -> ATProtoBlobReference {
         let session = try await authenticatedSession(did: did)
+        // PDSes can reject a nonce-less request before consuming its body. Prime the
+        // current nonce with a small request so a large upload is accepted immediately
+        // instead of leaving URLSession waiting to send a body the server will not read.
+        try await primeDPoPNonce(session: session)
         let responseData = try await xrpcData(
             session: session,
             method: "POST",
@@ -244,6 +250,7 @@ public struct ATProtoPDSClient: PDSClient {
         contentType: String,
         allowRefresh: Bool
     ) async throws -> Data {
+        let cachedNonce = await dpopNonces.nonce(for: session.token.pdsEndpoint)
         do {
             return try await xrpcData(
                 session: session,
@@ -251,10 +258,11 @@ public struct ATProtoPDSClient: PDSClient {
                 url: url,
                 body: body,
                 contentType: contentType,
-                dpopNonce: nil
+                dpopNonce: cachedNonce
             )
         } catch {
             if let nonce = dpopNonce(from: error) {
+                await dpopNonces.set(nonce, for: session.token.pdsEndpoint)
                 do {
                     return try await xrpcData(
                         session: session,
@@ -300,25 +308,44 @@ public struct ATProtoPDSClient: PDSClient {
         url: String,
         body: Data?,
         contentType: String,
-        dpopNonce: String?
+        dpopNonce nonce: String?
     ) async throws -> Data {
         let dpop = try session.dpopKey.proof(
             httpMethod: method,
             url: url,
             accessToken: session.token.accessToken,
-            nonce: dpopNonce
+            nonce: nonce
         )
-        let response = try await http.data(HTTPRequest(
-            url: url,
-            method: method,
-            headers: [
-                "Authorization": "DPoP \(session.token.accessToken)",
-                "DPoP": dpop,
-                "Content-Type": contentType,
-            ],
-            body: body
-        ))
-        return response.body
+        do {
+            let response = try await http.data(HTTPRequest(
+                url: url,
+                method: method,
+                headers: [
+                    "Authorization": "DPoP \(session.token.accessToken)",
+                    "DPoP": dpop,
+                    "Content-Type": contentType,
+                ],
+                body: body
+            ))
+            if let nonce = response.headers["dpop-nonce"] {
+                await dpopNonces.set(nonce, for: session.token.pdsEndpoint)
+            }
+            return response.body
+        } catch {
+            if let nonce = dpopNonce(from: error) {
+                await dpopNonces.set(nonce, for: session.token.pdsEndpoint)
+            }
+            throw error
+        }
+    }
+
+    private func primeDPoPNonce(session: AuthenticatedATProtoSession) async throws {
+        _ = try await xrpcData(
+            session: session,
+            method: "GET",
+            url: "\(session.token.pdsEndpoint)/xrpc/com.atproto.server.getSession",
+            body: nil
+        )
     }
 
     private func authenticatedSession(did: String) async throws -> AuthenticatedATProtoSession {
@@ -403,6 +430,18 @@ public struct ATProtoPDSClient: PDSClient {
                 nonce: nonce
             )
         }
+    }
+}
+
+private actor DPoPNonceStore {
+    private var nonces: [String: String] = [:]
+
+    func nonce(for endpoint: String) -> String? {
+        nonces[endpoint]
+    }
+
+    func set(_ nonce: String, for endpoint: String) {
+        nonces[endpoint] = nonce
     }
 }
 
