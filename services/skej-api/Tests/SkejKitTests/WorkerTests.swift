@@ -84,6 +84,59 @@ struct WorkerTests {
         #expect(job?.publishedUri?.hasSuffix("/\(job?.publishRkey ?? "")") == true)
     }
 
+    @Test func workerHydratesMissingExternalThumbnailBeforePublishing() async throws {
+        let store = try SQLiteStore(path: ":memory:")
+        try await store.migrate()
+        let pds = InMemoryPDSClient()
+        var record = makeRecord(scheduledFor: "2026-01-01T10:00:00Z")
+        record.posts = [
+            PostPlan(
+                text: "https://example.com/article",
+                embed: .object([
+                    "$type": .string("app.bsky.embed.external"),
+                    "external": .object([
+                        "uri": .string("https://example.com/article"),
+                        "title": .string("Article"),
+                        "description": .string("Description"),
+                    ]),
+                ])
+            ),
+        ]
+        try await pds.writeSchedule(did: "did:plc:test", rkey: "3lthumb", record: record)
+        try await store.upsertScheduleJob(
+            ScheduledJob(
+                did: "did:plc:test",
+                rkey: "3lthumb",
+                scheduledAt: record.scheduledAt,
+                status: .scheduled,
+                attempts: 0,
+                publishRkey: record.publishRkey
+            ),
+            now: "2026-01-01T09:00:00Z"
+        )
+        let hydrator = StubLinkPreviewHydrator()
+        let worker = ScheduleWorker(
+            store: store,
+            pdsClient: pds,
+            logger: Logger(label: "test"),
+            linkPreviewHydrator: hydrator
+        )
+
+        await worker.runTick(now: ISO8601DateFormatter().date(from: "2026-01-01T10:00:01Z")!)
+
+        let publishedRecord = try await pds.getSchedule(did: "did:plc:test", rkey: "3lthumb")
+        guard case let .object(embed)? = publishedRecord?.posts.first?.embed,
+              case let .object(external)? = embed["external"],
+              case let .object(thumb)? = external["thumb"],
+              case let .string(mimeType)? = thumb["mimeType"]
+        else {
+            Issue.record("Expected the worker to persist a hydrated thumbnail")
+            return
+        }
+        #expect(mimeType == "image/png")
+        #expect(await hydrator.requestedURLs() == ["https://example.com/article"])
+    }
+
     @Test func workerRetriesTransientFailuresForRecovery() async throws {
         let store = try SQLiteStore(path: ":memory:")
         try await store.migrate()
@@ -221,5 +274,29 @@ struct WorkerTests {
         #expect(job?.status == .scheduled)
         #expect(unblockedRecord?.status == .scheduled)
         #expect(unblockedRecord?.dependency?.parentPublishedUri == parent.publishedUri)
+    }
+}
+
+private actor StubLinkPreviewHydrator: LinkPreviewHydrating {
+    private var urls: [String] = []
+
+    func hydrate(did: String, url: String) async throws -> ExternalEmbed {
+        urls.append(url)
+        return ExternalEmbed(
+            external: ExternalEmbedContent(
+                uri: url,
+                title: "Hydrated article",
+                description: "Hydrated description",
+                thumb: ATProtoBlobReference(
+                    ref: ATProtoCIDLink(link: "bafythumb"),
+                    mimeType: "image/png",
+                    size: 4
+                )
+            )
+        )
+    }
+
+    func requestedURLs() -> [String] {
+        urls
     }
 }

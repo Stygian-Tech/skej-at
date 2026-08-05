@@ -5,12 +5,22 @@ public struct ScheduleWorker: Sendable {
     public let store: SQLiteStore
     public let pdsClient: any PDSClient
     public let logger: Logger
+    private let linkPreviewHydrator: any LinkPreviewHydrating
     private let maxAttempts = 8
 
-    public init(store: SQLiteStore, pdsClient: any PDSClient, logger: Logger) {
+    public init(
+        store: SQLiteStore,
+        pdsClient: any PDSClient,
+        logger: Logger,
+        linkPreviewHydrator: (any LinkPreviewHydrating)? = nil
+    ) {
         self.store = store
         self.pdsClient = pdsClient
         self.logger = logger
+        self.linkPreviewHydrator = linkPreviewHydrator ?? LinkPreviewService(
+            pdsClient: pdsClient,
+            logger: logger
+        )
     }
 
     public func runTick(now: Date = Date()) async {
@@ -128,6 +138,18 @@ public struct ScheduleWorker: Sendable {
                     did: job.did,
                     rkey: job.rkey,
                     parentPublishedUri: parentPublishedUri,
+                    now: nowString
+                )
+            }
+
+            let hydration = await hydrateMissingExternalThumbnails(record: record, did: job.did)
+            record = hydration.record
+            if hydration.count > 0 {
+                try await store.insertAuditEvent(
+                    did: job.did,
+                    scheduleRkey: job.rkey,
+                    action: "link_preview_thumbnails_hydrated",
+                    message: "Uploaded \(hydration.count) Open Graph thumbnail(s) before publishing.",
                     now: nowString
                 )
             }
@@ -275,6 +297,78 @@ public struct ScheduleWorker: Sendable {
         let base = min(pow(2.0, Double(capped)) * 60.0, 60.0 * 60.0)
         let jitter = Double.random(in: 0...30)
         return Timestamp.iso8601(now.addingTimeInterval(base + jitter))
+    }
+
+    private func hydrateMissingExternalThumbnails(
+        record: SkejScheduleRecord,
+        did: String
+    ) async -> (record: SkejScheduleRecord, count: Int) {
+        var updated = record
+        var count = 0
+
+        for index in updated.posts.indices {
+            guard let url = missingExternalThumbnailURL(in: updated.posts[index].embed) else {
+                continue
+            }
+            do {
+                let embed = try await linkPreviewHydrator.hydrate(did: did, url: url)
+                guard embed.external.thumb != nil else { continue }
+                let post = updated.posts[index]
+                updated.posts[index] = PostPlan(
+                    text: post.text,
+                    facets: post.facets,
+                    reply: post.reply,
+                    embed: try embed.skejJSONValue(),
+                    langs: post.langs,
+                    labels: post.labels,
+                    tags: post.tags
+                )
+                count += 1
+            } catch {
+                logger.warning(
+                    "link preview thumbnail still unavailable at publish time",
+                    metadata: [
+                        "host": "\(URL(string: url)?.host ?? "unknown")",
+                        "category": "\(String(describing: type(of: error)))",
+                    ]
+                )
+            }
+        }
+
+        if let shadowRecord = updated.shadowRecord,
+           case var .object(post) = shadowRecord,
+           let url = missingExternalThumbnailURL(in: post["embed"])
+        {
+            do {
+                let embed = try await linkPreviewHydrator.hydrate(did: did, url: url)
+                if embed.external.thumb != nil {
+                    post["embed"] = try embed.skejJSONValue()
+                    updated.shadowRecord = .object(post)
+                    count += 1
+                }
+            } catch {
+                logger.warning(
+                    "shadow record thumbnail still unavailable at publish time",
+                    metadata: [
+                        "host": "\(URL(string: url)?.host ?? "unknown")",
+                        "category": "\(String(describing: type(of: error)))",
+                    ]
+                )
+            }
+        }
+
+        return (updated, count)
+    }
+
+    private func missingExternalThumbnailURL(in embed: JSONValue?) -> String? {
+        guard case let .object(embed)? = embed,
+              case let .string(type)? = embed["$type"],
+              type == "app.bsky.embed.external",
+              case let .object(external)? = embed["external"],
+              external["thumb"] == nil,
+              case let .string(uri)? = external["uri"]
+        else { return nil }
+        return uri
     }
 }
 
