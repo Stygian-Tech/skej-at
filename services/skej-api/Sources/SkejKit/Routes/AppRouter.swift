@@ -867,11 +867,14 @@ private func createSchedule(did: String, body: CreateScheduleRequest, viewer: Vi
     if let shadowRecord = record.shadowRecord {
         record.shadowRecord = PostRecordCanonicalizer.canonicalizeFeedPost(shadowRecord)
     }
+    if record.recordType == "app.bsky.feed.post", !ATProtoTID.isValid(record.publishRkey) {
+        record.publishRkey = ATProtoTID.generate()
+    }
     try validate(record: record)
     let now = Timestamp.iso8601()
     let rkey = newRkey()
     let permission = try await requireBrandCapability(record.status == .draft ? .create : .approve, brandDid: did, viewer: viewer, services: services)
-    record.publishRkey = record.publishRkey.isEmpty ? ULID.generate() : record.publishRkey
+    record.publishRkey = record.publishRkey.isEmpty ? ATProtoTID.generate() : record.publishRkey
     record.status = record.status == .draft ? .draft : .scheduled
     record.teamUri = record.teamUri ?? permission?.teamUri
     record.createdByDid = record.createdByDid ?? viewer.did
@@ -903,6 +906,9 @@ private func updateSchedule(did: String, rkey: String, body: CreateScheduleReque
     if let shadowRecord = record.shadowRecord {
         record.shadowRecord = PostRecordCanonicalizer.canonicalizeFeedPost(shadowRecord)
     }
+    if record.recordType == "app.bsky.feed.post", !ATProtoTID.isValid(record.publishRkey) {
+        record.publishRkey = ATProtoTID.generate()
+    }
     try validate(record: record)
     let now = Timestamp.iso8601()
     let existingRecord = try await services.pdsClient.getSchedule(did: did, rkey: rkey)
@@ -915,7 +921,7 @@ private func updateSchedule(did: String, rkey: String, body: CreateScheduleReque
         _ = try await requireBrandCapability(record.status == .draft ? .create : .approve, brandDid: did, viewer: viewer, services: services)
     }
     record.createdByDid = record.createdByDid ?? existingRecord?.createdByDid ?? viewer.did
-    record.publishRkey = record.publishRkey.isEmpty ? (existing?.publishRkey ?? ULID.generate()) : record.publishRkey
+    record.publishRkey = record.publishRkey.isEmpty ? (existing?.publishRkey ?? ATProtoTID.generate()) : record.publishRkey
     record.updatedAt = now
     try await services.pdsClient.writeSchedule(did: did, rkey: rkey, record: record)
     let updated = job(did: did, rkey: rkey, record: record, attempts: existing?.attempts ?? 0)
@@ -986,7 +992,7 @@ private func duplicateSchedule(did: String, rkey: String, services: SkejServices
     let now = Timestamp.iso8601()
     let newRkey = newRkey()
     record.status = .draft
-    record.publishRkey = ULID.generate()
+    record.publishRkey = ATProtoTID.generate()
     record.publishedUri = nil
     record.publishedCid = nil
     record.lastError = nil
@@ -1273,6 +1279,9 @@ private func validate(record: SkejScheduleRecord) throws {
     }
     guard !record.publishRkey.isEmpty else {
         throw APIError(status: .badRequest, code: "missing_publish_rkey", message: "publishRkey is required")
+    }
+    if record.recordType == "app.bsky.feed.post", !ATProtoTID.isValid(record.publishRkey) {
+        throw APIError(status: .badRequest, code: "invalid_publish_rkey", message: "Bluesky post publishRkey must be an AT Protocol TID")
     }
 }
 

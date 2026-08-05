@@ -620,6 +620,17 @@ public actor SQLiteStore {
         )
     }
 
+    public func updatePublishRkey(did: String, rkey: String, publishRkey: String, now: String) throws {
+        try run(
+            """
+            UPDATE scheduled_jobs
+            SET publish_rkey = ?, updated_at = ?
+            WHERE did = ? AND rkey = ?
+            """,
+            [publishRkey, now, did, rkey]
+        )
+    }
+
     public func markJobFailed(did: String, rkey: String, error: ScheduleError, now: String) throws {
         try run(
             """

@@ -137,7 +137,7 @@ public struct ATProtoPDSClient: PDSClient {
                 "repo": .string(did),
                 "collection": .string(record.recordType),
                 "rkey": .string(record.publishRkey),
-                "validate": .bool(false),
+                "validate": .bool(true),
                 "record": recordValue,
             ]
         )

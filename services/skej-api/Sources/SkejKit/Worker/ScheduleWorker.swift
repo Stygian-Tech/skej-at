@@ -66,6 +66,26 @@ public struct ScheduleWorker: Sendable {
                 throw ScheduleError(code: .recordInvalid, message: "Schedule record missing from PDS")
             }
 
+            if record.recordType == "app.bsky.feed.post", !ATProtoTID.isValid(record.publishRkey) {
+                let legacyRkey = record.publishRkey
+                record.publishRkey = ATProtoTID.generate(date: now)
+                record.updatedAt = nowString
+                try await pdsClient.writeSchedule(did: job.did, rkey: job.rkey, record: record)
+                try await store.updatePublishRkey(
+                    did: job.did,
+                    rkey: job.rkey,
+                    publishRkey: record.publishRkey,
+                    now: nowString
+                )
+                try await store.insertAuditEvent(
+                    did: job.did,
+                    scheduleRkey: job.rkey,
+                    action: "publish_rkey_upgraded",
+                    message: "Replaced legacy publish rkey \(legacyRkey) with AT Protocol TID \(record.publishRkey).",
+                    now: nowString
+                )
+            }
+
             if record.status == .canceled {
                 try await store.insertAuditEvent(
                     did: job.did,

@@ -4,6 +4,7 @@ import {
   buildScheduleRecord,
   countGraphemes,
   firstHTTPURL,
+  generateTID,
   validateComposerDraft,
 } from "@/lib/editor";
 
@@ -62,6 +63,16 @@ describe("schedule records", () => {
     expect(record.status).toBe("scheduled");
     expect(record.posts[0]?.text).toBe("hello pds");
     expect(record.posts[0]?.labels).toContain("warn");
+    expect(record.publishRkey).toMatch(/^[234567abcdefghij][234567abcdefghijklmnopqrstuvwxyz]{12}$/);
+  });
+
+  it("generates increasing AT Protocol TIDs", () => {
+    const now = new Date("2026-01-01T10:00:00Z");
+    const first = generateTID(now);
+    const second = generateTID(now);
+
+    expect(first).toMatch(/^[234567abcdefghij][234567abcdefghijklmnopqrstuvwxyz]{12}$/);
+    expect(second > first).toBe(true);
   });
 });
 
