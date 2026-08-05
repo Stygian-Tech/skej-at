@@ -16,6 +16,7 @@ public struct AppConfig: Sendable {
     public let workerEnabled: Bool
     public let workerIntervalSeconds: UInt64
     public let liveATProtoEnabled: Bool
+    public let proFeaturesEnabled: Bool
 
     public init(
         port: Int,
@@ -25,7 +26,8 @@ public struct AppConfig: Sendable {
         sqlitePath: String,
         workerEnabled: Bool = true,
         workerIntervalSeconds: UInt64 = 30,
-        liveATProtoEnabled: Bool = false
+        liveATProtoEnabled: Bool = false,
+        proFeaturesEnabled: Bool = true
     ) {
         self.port = port
         self.environment = environment
@@ -35,6 +37,7 @@ public struct AppConfig: Sendable {
         self.workerEnabled = workerEnabled
         self.workerIntervalSeconds = workerIntervalSeconds
         self.liveATProtoEnabled = liveATProtoEnabled
+        self.proFeaturesEnabled = proFeaturesEnabled
     }
 
     public static func load() -> AppConfig {
@@ -61,6 +64,10 @@ public struct AppConfig: Sendable {
         let liveATProtoEnabled = !["0", "false", "no"].contains(
             (env["SKEJ_LIVE_ATPROTO_ENABLED"] ?? (liveATProtoDefault ? "true" : "false")).lowercased()
         )
+        let proDefault = appEnv != .prod
+        let proFeaturesEnabled = !["0", "false", "no"].contains(
+            (env["SKEJ_PRO_ENABLED"] ?? (proDefault ? "true" : "false")).lowercased()
+        )
         return AppConfig(
             port: port,
             environment: appEnv,
@@ -69,7 +76,8 @@ public struct AppConfig: Sendable {
             sqlitePath: sqlitePath,
             workerEnabled: workerEnabled,
             workerIntervalSeconds: interval,
-            liveATProtoEnabled: liveATProtoEnabled
+            liveATProtoEnabled: liveATProtoEnabled,
+            proFeaturesEnabled: proFeaturesEnabled
         )
     }
 

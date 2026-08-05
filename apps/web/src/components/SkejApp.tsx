@@ -367,8 +367,12 @@ export function SkejApp() {
   const selected =
     sortedQueue.find((item) => item.rkey === selectedRkey) ?? visibleQueue[0] ?? sortedQueue[0] ?? null;
   const isAuthenticated = authStatus === "authenticated" && viewer !== null;
+  const proEnabled = viewer?.proFeaturesEnabled === true;
   const selectedAccount =
     accounts.find((account) => account.did === selectedAccountDid) ?? accounts[0] ?? null;
+  // When capability wiring lands, both must be forced true while `proEnabled`
+  // is false so posts always schedule directly instead of entering a draft
+  // state nobody can approve.
   const canCreateForSelectedBrand = true;
   const canApproveSelectedBrand = true;
   const managedParents = sortedQueue.filter((item) =>
@@ -897,24 +901,30 @@ export function SkejApp() {
                     >
                       <ViewerAvatar viewer={viewer} />
                     </button>
-                    <div className="relative block">
-                      <select
-                        aria-label="Connected Account"
-                        className="skej-select-control h-10 w-28 rounded-full border border-border bg-background/80 py-0 pl-4 pr-10 text-sm font-black leading-none outline-none transition hover:bg-muted focus-visible:ring-2 focus-visible:ring-ring sm:w-44"
-                        value={selectedAccountDid ?? ""}
-                        onChange={(event) => void switchAccount(event.target.value)}
-                      >
-                        {accounts.map((account) => (
-                          <option key={account.did} value={account.did}>
-                            {account.handle ?? account.did}
-                          </option>
-                        ))}
-                      </select>
-                      <ChevronDown
-                        aria-hidden="true"
-                        className="pointer-events-none absolute right-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground"
-                      />
-                    </div>
+                    {proEnabled ? (
+                      <div className="relative block">
+                        <select
+                          aria-label="Connected Account"
+                          className="skej-select-control h-10 w-28 rounded-full border border-border bg-background/80 py-0 pl-4 pr-10 text-sm font-black leading-none outline-none transition hover:bg-muted focus-visible:ring-2 focus-visible:ring-ring sm:w-44"
+                          value={selectedAccountDid ?? ""}
+                          onChange={(event) => void switchAccount(event.target.value)}
+                        >
+                          {accounts.map((account) => (
+                            <option key={account.did} value={account.did}>
+                              {account.handle ?? account.did}
+                            </option>
+                          ))}
+                        </select>
+                        <ChevronDown
+                          aria-hidden="true"
+                          className="pointer-events-none absolute right-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground"
+                        />
+                      </div>
+                    ) : (
+                      <span className="flex h-10 w-28 items-center truncate rounded-full border border-border bg-background/80 pl-4 pr-4 text-sm font-black leading-none sm:w-44">
+                        {selectedAccount?.handle ?? viewer?.handle ?? viewer?.did}
+                      </span>
+                    )}
                     <Button
                       aria-label="Log Out"
                       className="size-10 rounded-full border border-border bg-background/80 p-0"
@@ -1496,15 +1506,17 @@ export function SkejApp() {
                     </CardDescription>
                   </div>
                   <div className="flex items-center gap-2">
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      onClick={() => setCalendarOpen(true)}
-                      disabled={!isAuthenticated}
-                    >
-                      <ArrowUpRight data-icon="inline-start" />
-                      Calendar
-                    </Button>
+                    {proEnabled ? (
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={() => setCalendarOpen(true)}
+                        disabled={!isAuthenticated}
+                      >
+                        <ArrowUpRight data-icon="inline-start" />
+                        Calendar
+                      </Button>
+                    ) : null}
                     <Button
                       variant="secondary"
                       size="icon"
@@ -1518,7 +1530,7 @@ export function SkejApp() {
                 </div>
               </CardHeader>
               <CardContent className="flex flex-col gap-3">
-                {calendarDays.length > 0 ? (
+                {!proEnabled ? null : calendarDays.length > 0 ? (
                   <div className="flex gap-2 overflow-x-auto pb-1">
                     {calendarDays.map(([day, count]) => (
                       <button
@@ -1715,7 +1727,7 @@ export function SkejApp() {
         </section>
       </div>
 
-      {calendarOpen ? (
+      {proEnabled && calendarOpen ? (
         <div
           aria-labelledby="content-calendar-title"
           aria-modal="true"

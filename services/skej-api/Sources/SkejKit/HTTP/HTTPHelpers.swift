@@ -51,6 +51,13 @@ public func errorResponse(_ error: Error) -> Response {
             status: apiError.status
         )) ?? Response(status: apiError.status)
     }
+    if let httpError = error as? HTTPError {
+        let code = httpError.status.reasonPhrase.lowercased().replacingOccurrences(of: " ", with: "_")
+        return (try? jsonResponse(
+            ErrorBody(error: code, message: httpError.status.reasonPhrase),
+            status: httpError.status
+        )) ?? Response(status: httpError.status)
+    }
     return (try? jsonResponse(
         ErrorBody(error: "internal_error", message: "Internal server error"),
         status: .internalServerError
