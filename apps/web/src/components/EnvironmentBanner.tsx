@@ -3,7 +3,7 @@ import { cn } from "@/lib/utils";
 type AppEnv = "local" | "dev" | "prod";
 
 const envConfig: Record<
-  AppEnv,
+  Exclude<AppEnv, "prod">,
   {
     label: string;
     description: string;
@@ -20,11 +20,6 @@ const envConfig: Record<
     description: "Connected to the shared development environment.",
     className: "border-accent/60 bg-accent text-accent-foreground",
   },
-  prod: {
-    label: "Prod",
-    description: "Production environment.",
-    className: "border-primary/40 bg-primary text-primary-foreground",
-  },
 };
 
 function normalizeEnv(value: string | undefined): AppEnv {
@@ -34,6 +29,7 @@ function normalizeEnv(value: string | undefined): AppEnv {
 
 export function EnvironmentBanner() {
   const env = normalizeEnv(process.env.NEXT_PUBLIC_APP_ENV ?? process.env.APP_ENV);
+  if (env === "prod") return null;
   const config = envConfig[env];
 
   return (
