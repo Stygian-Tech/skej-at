@@ -807,19 +807,22 @@ public struct Viewer: Codable, Equatable, Sendable {
     public let displayName: String?
     public let avatar: String?
     public let defaultAccountDid: String?
+    public let proFeaturesEnabled: Bool?
 
     public init(
         did: String,
         handle: String? = nil,
         displayName: String? = nil,
         avatar: String? = nil,
-        defaultAccountDid: String? = nil
+        defaultAccountDid: String? = nil,
+        proFeaturesEnabled: Bool? = nil
     ) {
         self.did = did
         self.handle = handle
         self.displayName = displayName
         self.avatar = avatar
         self.defaultAccountDid = defaultAccountDid ?? did
+        self.proFeaturesEnabled = proFeaturesEnabled
     }
 }
 

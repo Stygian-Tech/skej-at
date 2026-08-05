@@ -46,7 +46,12 @@ SKEJ_SQLITE_PATH=data/skej.sqlite
 SKEJ_WORKER_ENABLED=true
 SKEJ_WORKER_INTERVAL_SECONDS=30
 SKEJ_LIVE_ATPROTO_ENABLED=false
+SKEJ_PRO_ENABLED=true
 ```
+
+`SKEJ_PRO_ENABLED` gates the Skej Pro features (teams, calendar, approvals,
+posting on behalf of other accounts). It defaults to on everywhere except
+prod; when off, the Pro API routes are not registered at all.
 
 Hosted defaults:
 
@@ -78,11 +83,13 @@ Required hosted gateway variables:
 APP_ENV=dev
 SKEJ_PUBLIC_ORIGIN=https://api.testing.skej.at
 SKEJ_WEB_ORIGIN=https://testing.skej.at
+SKEJ_PRO_ENABLED=true
 ```
 
 ```bash
 APP_ENV=prod
 SKEJ_PUBLIC_ORIGIN=https://skej.at
+SKEJ_PRO_ENABLED=false
 ```
 
 ## CI

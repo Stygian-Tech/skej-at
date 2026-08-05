@@ -32,6 +32,7 @@ Development also uses:
 APP_ENV=dev
 SKEJ_PUBLIC_ORIGIN=https://api.testing.skej.at
 SKEJ_WEB_ORIGIN=https://testing.skej.at
+SKEJ_PRO_ENABLED=true
 ```
 
 Production preserves the existing OAuth client identity while changing the
@@ -41,7 +42,11 @@ gateway host:
 APP_ENV=prod
 SKEJ_PUBLIC_ORIGIN=https://skej.at
 SKEJ_WEB_ORIGIN=https://skej.at
+SKEJ_PRO_ENABLED=false
 ```
+
+`SKEJ_PRO_ENABLED` already defaults to off when `APP_ENV=prod`, so the
+explicit production value is belt-and-suspenders.
 
 `RAILWAY_RUN_UID=0` is required because Railway mounts volumes as root while the
 container image normally runs as `nobody`. The volume mount is available only

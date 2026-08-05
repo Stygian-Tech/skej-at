@@ -320,4 +320,5 @@ export interface Viewer {
   displayName?: string;
   avatar?: string;
   defaultAccountDid?: string;
+  proFeaturesEnabled?: boolean;
 }

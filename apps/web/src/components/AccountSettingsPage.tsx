@@ -27,6 +27,7 @@ import {
   CardTitle,
 } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
+import { cn } from "@/lib/utils";
 import {
   addTeamMember,
   createBrandGrant,
@@ -96,6 +97,7 @@ export function AccountSettingsPage() {
   const [error, setError] = React.useState<string | null>(null);
 
   const isAuthenticated = authStatus === "authenticated" && viewer !== null;
+  const proEnabled = viewer?.proFeaturesEnabled === true;
   const selectedTeam =
     teams.find((team) => team.rkey === selectedTeamRkey) ?? teams[0] ?? null;
   const selectedAccount =
@@ -165,7 +167,9 @@ export function AccountSettingsPage() {
         currentViewer.did;
       setSelectedAccountDid(defaultDid);
       setAuditEvents(defaultDid ? await listAuditEvents(defaultDid) : []);
-      await refreshTeams();
+      if (currentViewer.proFeaturesEnabled === true) {
+        await refreshTeams();
+      }
     } catch {
       setViewer(null);
       setAccounts([]);
@@ -181,7 +185,7 @@ export function AccountSettingsPage() {
   }, [loadSession]);
 
   React.useEffect(() => {
-    if (!selectedAccountDid || !canManageSelectedBrand) return;
+    if (!proEnabled || !selectedAccountDid || !canManageSelectedBrand) return;
     let cancelled = false;
     void getBrandProfile(selectedAccountDid)
       .then((profile) => {
@@ -196,7 +200,7 @@ export function AccountSettingsPage() {
     return () => {
       cancelled = true;
     };
-  }, [canManageSelectedBrand, selectedAccountDid]);
+  }, [canManageSelectedBrand, proEnabled, selectedAccountDid]);
 
   async function signOut() {
     await logout();
@@ -291,7 +295,13 @@ export function AccountSettingsPage() {
         ) : null}
 
         {isAuthenticated ? (
-          <section className="grid gap-5 xl:grid-cols-[minmax(0,0.95fr)_minmax(420px,0.65fr)]">
+          <section
+            className={cn(
+              "grid gap-5",
+              proEnabled && "xl:grid-cols-[minmax(0,0.95fr)_minmax(420px,0.65fr)]"
+            )}
+          >
+            {proEnabled ? (
             <div className="grid gap-5">
               <Card>
                 <CardHeader>
@@ -517,6 +527,7 @@ export function AccountSettingsPage() {
                 </>
               ) : null}
             </div>
+            ) : null}
 
             <aside className="grid content-start gap-5">
               <Card>
@@ -556,7 +567,7 @@ export function AccountSettingsPage() {
                 </CardContent>
               </Card>
 
-              {selectedTeam && selectedAccountDid && viewer ? (
+              {proEnabled && selectedTeam && selectedAccountDid && viewer ? (
                 <Card>
                   <CardHeader>
                     <CardTitle>Brand Grants</CardTitle>
@@ -609,7 +620,7 @@ export function AccountSettingsPage() {
                 </Card>
               ) : null}
 
-              {canManageSelectedBrand && selectedAccountDid ? (
+              {proEnabled && canManageSelectedBrand && selectedAccountDid ? (
                 <Card>
                   <CardHeader>
                     <CardTitle>Brand Profile</CardTitle>

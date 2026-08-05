@@ -109,7 +109,14 @@ public func buildRouter(services: SkejServices) -> Router<BasicRequestContext> {
 
     v1.get("me") { request, _ in
         let viewer = try await authenticate(request, services: services)
-        return try jsonResponse(viewer)
+        return try jsonResponse(Viewer(
+            did: viewer.did,
+            handle: viewer.handle,
+            displayName: viewer.displayName,
+            avatar: viewer.avatar,
+            defaultAccountDid: viewer.defaultAccountDid,
+            proFeaturesEnabled: services.config.proFeaturesEnabled
+        ))
     }
 
     v1.post("logout") { request, _ in
@@ -124,279 +131,286 @@ public func buildRouter(services: SkejServices) -> Router<BasicRequestContext> {
     }
 
     v1.get("accounts") { request, _ in
-        _ = try await authenticate(request, services: services)
-        let accounts = try await services.store.listManagedAccounts()
+        let viewer = try await authenticate(request, services: services)
+        var accounts = try await services.store.listManagedAccounts()
+        if !services.config.proFeaturesEnabled {
+            accounts = accounts.filter { $0.did == viewer.did || $0.did == viewer.defaultAccountDid }
+        }
         return try jsonResponse(ListAccountsResponse(accounts: accounts))
     }
 
-    v1.get("teams") { request, _ in
-        let viewer = try await authenticate(request, services: services)
-        let teams = try await listVisibleTeams(viewer: viewer, services: services)
-        return try jsonResponse(ListTeamsResponse(teams: teams))
-    }
-
-    v1.post("teams") { request, _ in
-        let viewer = try await authenticate(request, services: services)
-        let body = try await decodeJSONBody(request, as: CreateTeamRequest.self)
-        let now = Timestamp.iso8601()
-        let rkey = newRkey()
-        let record = SkejTeamRecord(
-            ownerAdminDid: viewer.did,
-            title: body.title.trimmingCharacters(in: .whitespacesAndNewlines),
-            createdAt: now,
-            updatedAt: now
-        )
-        try validate(team: record)
-        try await services.pdsClient.writeRecord(did: viewer.did, collection: "at.skej.team", rkey: rkey, record: record)
-        let uri = ATURI.record(did: viewer.did, collection: "at.skej.team", rkey: rkey)
-        try await services.store.insertAuditEvent(
-            did: viewer.did,
-            scheduleRkey: nil,
-            action: "team_created",
-            message: "Created team \(record.title).",
-            now: now
-        )
-        return try jsonResponse(TeamSummary(rkey: rkey, uri: uri, record: record), status: .created)
-    }
-
-    v1.get("teams/:teamRkey") { request, context in
-        let viewer = try await authenticate(request, services: services)
-        let team = try await requireVisibleTeam(rkey: try context.parameters.require("teamRkey"), viewer: viewer, services: services)
-        return try jsonResponse(team)
-    }
-
-    v1.patch("teams/:teamRkey") { request, context in
-        let viewer = try await authenticate(request, services: services)
-        var team = try await requireTeamAdmin(rkey: try context.parameters.require("teamRkey"), viewer: viewer, services: services)
-        let body = try await decodeJSONBody(request, as: UpdateTeamRequest.self)
-        if let title = body.title {
-            team.record.title = title.trimmingCharacters(in: .whitespacesAndNewlines)
+    // Skej Pro routes: never registered when the flag is off, so they are
+    // indistinguishable from paths that don't exist.
+    if services.config.proFeaturesEnabled {
+        v1.get("teams") { request, _ in
+            let viewer = try await authenticate(request, services: services)
+            let teams = try await listVisibleTeams(viewer: viewer, services: services)
+            return try jsonResponse(ListTeamsResponse(teams: teams))
         }
-        if let status = body.status {
-            team.record.status = status
+
+        v1.post("teams") { request, _ in
+            let viewer = try await authenticate(request, services: services)
+            let body = try await decodeJSONBody(request, as: CreateTeamRequest.self)
+            let now = Timestamp.iso8601()
+            let rkey = newRkey()
+            let record = SkejTeamRecord(
+                ownerAdminDid: viewer.did,
+                title: body.title.trimmingCharacters(in: .whitespacesAndNewlines),
+                createdAt: now,
+                updatedAt: now
+            )
+            try validate(team: record)
+            try await services.pdsClient.writeRecord(did: viewer.did, collection: "at.skej.team", rkey: rkey, record: record)
+            let uri = ATURI.record(did: viewer.did, collection: "at.skej.team", rkey: rkey)
+            try await services.store.insertAuditEvent(
+                did: viewer.did,
+                scheduleRkey: nil,
+                action: "team_created",
+                message: "Created team \(record.title).",
+                now: now
+            )
+            return try jsonResponse(TeamSummary(rkey: rkey, uri: uri, record: record), status: .created)
         }
-        team.record.updatedAt = Timestamp.iso8601()
-        try validate(team: team.record)
-        try await services.pdsClient.writeRecord(did: teamOwnerDid(team.uri), collection: "at.skej.team", rkey: team.rkey, record: team.record)
-        return try jsonResponse(team)
-    }
 
-    v1.post("teams/:teamRkey/transfer-owner") { request, context in
-        let viewer = try await authenticate(request, services: services)
-        var team = try await requireOwnedTeam(rkey: try context.parameters.require("teamRkey"), viewer: viewer, services: services)
-        let body = try await decodeJSONBody(request, as: TransferTeamOwnerRequest.self)
-        team.record.ownerAdminDid = body.ownerAdminDid
-        team.record.updatedAt = Timestamp.iso8601()
-        try await services.pdsClient.writeRecord(did: viewer.did, collection: "at.skej.team", rkey: team.rkey, record: team.record)
-        return try jsonResponse(team)
-    }
-
-    v1.get("teams/:teamRkey/members") { request, context in
-        let viewer = try await authenticate(request, services: services)
-        let team = try await requireVisibleTeam(rkey: try context.parameters.require("teamRkey"), viewer: viewer, services: services)
-        return try jsonResponse(ListMembersResponse(members: try await listTeamMembers(team: team, services: services)))
-    }
-
-    v1.post("teams/:teamRkey/members") { request, context in
-        let viewer = try await authenticate(request, services: services)
-        let team = try await requireTeamAdmin(rkey: try context.parameters.require("teamRkey"), viewer: viewer, services: services)
-        let body = try await decodeJSONBody(request, as: UpsertMemberRequest.self)
-        let now = Timestamp.iso8601()
-        let rkey = body.memberDid.replacingOccurrences(of: ":", with: "_")
-        let record = TeamMemberRecord(
-            teamUri: team.uri,
-            memberDid: body.memberDid,
-            role: body.role,
-            status: body.status ?? .active,
-            groupUris: body.groupUris ?? [],
-            createdAt: now,
-            updatedAt: now
-        )
-        try await services.pdsClient.writeRecord(did: teamOwnerDid(team.uri), collection: "at.skej.team.member", rkey: rkey, record: record)
-        return try jsonResponse(TeamMemberSummary(rkey: rkey, uri: ATURI.record(did: teamOwnerDid(team.uri), collection: "at.skej.team.member", rkey: rkey), record: record), status: .created)
-    }
-
-    v1.patch("teams/:teamRkey/members/:memberDid") { request, context in
-        let viewer = try await authenticate(request, services: services)
-        let team = try await requireTeamAdmin(rkey: try context.parameters.require("teamRkey"), viewer: viewer, services: services)
-        let body = try await decodeJSONBody(request, as: UpsertMemberRequest.self)
-        let memberDid = try context.parameters.require("memberDid")
-        guard memberDid == body.memberDid else {
-            throw APIError(status: .badRequest, code: "invalid_member", message: "Member DID mismatch")
+        v1.get("teams/:teamRkey") { request, context in
+            let viewer = try await authenticate(request, services: services)
+            let team = try await requireVisibleTeam(rkey: try context.parameters.require("teamRkey"), viewer: viewer, services: services)
+            return try jsonResponse(team)
         }
-        let now = Timestamp.iso8601()
-        let rkey = memberDid.replacingOccurrences(of: ":", with: "_")
-        let existing = try await services.pdsClient.getRecord(did: teamOwnerDid(team.uri), collection: "at.skej.team.member", rkey: rkey, as: TeamMemberRecord.self)
-        let record = TeamMemberRecord(
-            teamUri: team.uri,
-            memberDid: memberDid,
-            role: body.role,
-            status: body.status ?? existing?.status ?? .active,
-            groupUris: body.groupUris ?? existing?.groupUris ?? [],
-            createdAt: existing?.createdAt ?? now,
-            updatedAt: now
-        )
-        try await services.pdsClient.writeRecord(did: teamOwnerDid(team.uri), collection: "at.skej.team.member", rkey: rkey, record: record)
-        return try jsonResponse(TeamMemberSummary(rkey: rkey, uri: ATURI.record(did: teamOwnerDid(team.uri), collection: "at.skej.team.member", rkey: rkey), record: record))
-    }
 
-    v1.get("teams/:teamRkey/groups") { request, context in
-        let viewer = try await authenticate(request, services: services)
-        let team = try await requireVisibleTeam(rkey: try context.parameters.require("teamRkey"), viewer: viewer, services: services)
-        return try jsonResponse(ListGroupsResponse(groups: try await listTeamGroups(team: team, services: services)))
-    }
-
-    v1.post("teams/:teamRkey/groups") { request, context in
-        let viewer = try await authenticate(request, services: services)
-        let team = try await requireTeamAdmin(rkey: try context.parameters.require("teamRkey"), viewer: viewer, services: services)
-        let body = try await decodeJSONBody(request, as: UpsertGroupRequest.self)
-        let now = Timestamp.iso8601()
-        let rkey = newRkey()
-        let record = TeamGroupRecord(
-            teamUri: team.uri,
-            name: body.name,
-            memberDids: body.memberDids ?? [],
-            brandGrantUris: body.brandGrantUris ?? [],
-            createdAt: now,
-            updatedAt: now
-        )
-        try await services.pdsClient.writeRecord(did: teamOwnerDid(team.uri), collection: "at.skej.team.group", rkey: rkey, record: record)
-        return try jsonResponse(TeamGroupSummary(rkey: rkey, uri: ATURI.record(did: teamOwnerDid(team.uri), collection: "at.skej.team.group", rkey: rkey), record: record), status: .created)
-    }
-
-    v1.patch("teams/:teamRkey/groups/:groupRkey") { request, context in
-        let viewer = try await authenticate(request, services: services)
-        let team = try await requireTeamAdmin(rkey: try context.parameters.require("teamRkey"), viewer: viewer, services: services)
-        let rkey = try context.parameters.require("groupRkey")
-        let body = try await decodeJSONBody(request, as: UpsertGroupRequest.self)
-        let now = Timestamp.iso8601()
-        let existing = try await services.pdsClient.getRecord(did: teamOwnerDid(team.uri), collection: "at.skej.team.group", rkey: rkey, as: TeamGroupRecord.self)
-        let record = TeamGroupRecord(
-            teamUri: team.uri,
-            name: body.name,
-            memberDids: body.memberDids ?? existing?.memberDids ?? [],
-            brandGrantUris: body.brandGrantUris ?? existing?.brandGrantUris ?? [],
-            createdAt: existing?.createdAt ?? now,
-            updatedAt: now
-        )
-        try await services.pdsClient.writeRecord(did: teamOwnerDid(team.uri), collection: "at.skej.team.group", rkey: rkey, record: record)
-        return try jsonResponse(TeamGroupSummary(rkey: rkey, uri: ATURI.record(did: teamOwnerDid(team.uri), collection: "at.skej.team.group", rkey: rkey), record: record))
-    }
-
-    v1.get("teams/:teamRkey/brand-grants") { request, context in
-        let viewer = try await authenticate(request, services: services)
-        let team = try await requireVisibleTeam(rkey: try context.parameters.require("teamRkey"), viewer: viewer, services: services)
-        return try jsonResponse(ListBrandGrantsResponse(grants: try await listBrandGrants(team: team, services: services)))
-    }
-
-    v1.post("teams/:teamRkey/brand-grants") { request, context in
-        let viewer = try await authenticate(request, services: services)
-        let team = try await requireTeamAdmin(rkey: try context.parameters.require("teamRkey"), viewer: viewer, services: services)
-        let body = try await decodeJSONBody(request, as: UpsertBrandGrantRequest.self)
-        let now = Timestamp.iso8601()
-        let rkey = newRkey()
-        let record = BrandGrantRecord(
-            teamUri: team.uri,
-            brandDid: body.brandDid,
-            granteeType: body.granteeType,
-            grantee: body.grantee,
-            capabilities: Array(Set(body.capabilities)),
-            createdAt: now,
-            updatedAt: now
-        )
-        try await services.pdsClient.writeRecord(did: teamOwnerDid(team.uri), collection: "at.skej.team.brandGrant", rkey: rkey, record: record)
-        return try jsonResponse(BrandGrantSummary(rkey: rkey, uri: ATURI.record(did: teamOwnerDid(team.uri), collection: "at.skej.team.brandGrant", rkey: rkey), record: record), status: .created)
-    }
-
-    v1.patch("teams/:teamRkey/brand-grants/:grantRkey") { request, context in
-        let viewer = try await authenticate(request, services: services)
-        let team = try await requireTeamAdmin(rkey: try context.parameters.require("teamRkey"), viewer: viewer, services: services)
-        let rkey = try context.parameters.require("grantRkey")
-        let body = try await decodeJSONBody(request, as: UpsertBrandGrantRequest.self)
-        let now = Timestamp.iso8601()
-        let existing = try await services.pdsClient.getRecord(did: teamOwnerDid(team.uri), collection: "at.skej.team.brandGrant", rkey: rkey, as: BrandGrantRecord.self)
-        let record = BrandGrantRecord(
-            teamUri: team.uri,
-            brandDid: body.brandDid,
-            granteeType: body.granteeType,
-            grantee: body.grantee,
-            capabilities: Array(Set(body.capabilities)),
-            createdAt: existing?.createdAt ?? now,
-            updatedAt: now
-        )
-        try await services.pdsClient.writeRecord(did: teamOwnerDid(team.uri), collection: "at.skej.team.brandGrant", rkey: rkey, record: record)
-        return try jsonResponse(BrandGrantSummary(rkey: rkey, uri: ATURI.record(did: teamOwnerDid(team.uri), collection: "at.skej.team.brandGrant", rkey: rkey), record: record))
-    }
-
-    v1.get("teams/:teamRkey/brands") { request, context in
-        let viewer = try await authenticate(request, services: services)
-        let team = try await requireVisibleTeam(rkey: try context.parameters.require("teamRkey"), viewer: viewer, services: services)
-        return try jsonResponse(ListBrandsResponse(brands: try await listBrands(team: team, services: services)))
-    }
-
-    v1.post("teams/:teamRkey/brands") { request, context in
-        let viewer = try await authenticate(request, services: services)
-        let team = try await requireTeamAdmin(rkey: try context.parameters.require("teamRkey"), viewer: viewer, services: services)
-        let body = try await decodeJSONBody(request, as: UpsertBrandRequest.self)
-        let now = Timestamp.iso8601()
-        let rkey = body.brandDid.replacingOccurrences(of: ":", with: "_")
-        let record = SkejBrandRecord(
-            teamUri: team.uri,
-            ownerAdminDid: team.record.ownerAdminDid,
-            brandDid: body.brandDid,
-            status: body.status ?? .active,
-            createdAt: now,
-            updatedAt: now
-        )
-        try await services.pdsClient.writeRecord(did: body.brandDid, collection: "at.skej.brand", rkey: rkey, record: record)
-        return try jsonResponse(BrandSummary(rkey: rkey, uri: ATURI.record(did: body.brandDid, collection: "at.skej.brand", rkey: rkey), record: record), status: .created)
-    }
-
-    v1.patch("teams/:teamRkey/brands/:brandDid") { request, context in
-        let viewer = try await authenticate(request, services: services)
-        let team = try await requireTeamAdmin(rkey: try context.parameters.require("teamRkey"), viewer: viewer, services: services)
-        let brandDid = try context.parameters.require("brandDid")
-        let body = try await decodeJSONBody(request, as: UpsertBrandRequest.self)
-        guard brandDid == body.brandDid else {
-            throw APIError(status: .badRequest, code: "invalid_brand", message: "Brand DID mismatch")
+        v1.patch("teams/:teamRkey") { request, context in
+            let viewer = try await authenticate(request, services: services)
+            var team = try await requireTeamAdmin(rkey: try context.parameters.require("teamRkey"), viewer: viewer, services: services)
+            let body = try await decodeJSONBody(request, as: UpdateTeamRequest.self)
+            if let title = body.title {
+                team.record.title = title.trimmingCharacters(in: .whitespacesAndNewlines)
+            }
+            if let status = body.status {
+                team.record.status = status
+            }
+            team.record.updatedAt = Timestamp.iso8601()
+            try validate(team: team.record)
+            try await services.pdsClient.writeRecord(did: teamOwnerDid(team.uri), collection: "at.skej.team", rkey: team.rkey, record: team.record)
+            return try jsonResponse(team)
         }
-        let now = Timestamp.iso8601()
-        let rkey = brandDid.replacingOccurrences(of: ":", with: "_")
-        let existing = try await services.pdsClient.getRecord(did: brandDid, collection: "at.skej.brand", rkey: rkey, as: SkejBrandRecord.self)
-        let record = SkejBrandRecord(
-            teamUri: team.uri,
-            ownerAdminDid: team.record.ownerAdminDid,
-            brandDid: brandDid,
-            status: body.status ?? existing?.status ?? .active,
-            createdAt: existing?.createdAt ?? now,
-            updatedAt: now
-        )
-        try await services.pdsClient.writeRecord(did: brandDid, collection: "at.skej.brand", rkey: rkey, record: record)
-        return try jsonResponse(BrandSummary(rkey: rkey, uri: ATURI.record(did: brandDid, collection: "at.skej.brand", rkey: rkey), record: record))
-    }
 
-    v1.get("brands/:did/profile") { request, context in
-        let did = try context.parameters.require("did")
-        let viewer = try await authorize(did: did, request: request, services: services)
-        _ = try await requireBrandCapability(.create, brandDid: did, viewer: viewer, services: services)
-        let profile = try await services.pdsClient.getBrandProfile(did: did)
-        return try jsonResponse(profile)
-    }
+        v1.post("teams/:teamRkey/transfer-owner") { request, context in
+            let viewer = try await authenticate(request, services: services)
+            var team = try await requireOwnedTeam(rkey: try context.parameters.require("teamRkey"), viewer: viewer, services: services)
+            let body = try await decodeJSONBody(request, as: TransferTeamOwnerRequest.self)
+            team.record.ownerAdminDid = body.ownerAdminDid
+            team.record.updatedAt = Timestamp.iso8601()
+            try await services.pdsClient.writeRecord(did: viewer.did, collection: "at.skej.team", rkey: team.rkey, record: team.record)
+            return try jsonResponse(team)
+        }
 
-    v1.patch("brands/:did/profile") { request, context in
-        let did = try context.parameters.require("did")
-        let viewer = try await authorize(did: did, request: request, services: services)
-        _ = try await requireBrandCapability(.manage, brandDid: did, viewer: viewer, services: services)
-        let body = try await decodeJSONBody(request, as: UpdateBrandProfileRequest.self)
-        let profile = try await services.pdsClient.updateBrandProfile(did: did, profile: body)
-        try await services.store.insertAuditEvent(
-            did: did,
-            scheduleRkey: nil,
-            action: "brand_profile_updated",
-            message: "Brand profile updated.",
-            now: Timestamp.iso8601()
-        )
-        return try jsonResponse(profile)
+        v1.get("teams/:teamRkey/members") { request, context in
+            let viewer = try await authenticate(request, services: services)
+            let team = try await requireVisibleTeam(rkey: try context.parameters.require("teamRkey"), viewer: viewer, services: services)
+            return try jsonResponse(ListMembersResponse(members: try await listTeamMembers(team: team, services: services)))
+        }
+
+        v1.post("teams/:teamRkey/members") { request, context in
+            let viewer = try await authenticate(request, services: services)
+            let team = try await requireTeamAdmin(rkey: try context.parameters.require("teamRkey"), viewer: viewer, services: services)
+            let body = try await decodeJSONBody(request, as: UpsertMemberRequest.self)
+            let now = Timestamp.iso8601()
+            let rkey = body.memberDid.replacingOccurrences(of: ":", with: "_")
+            let record = TeamMemberRecord(
+                teamUri: team.uri,
+                memberDid: body.memberDid,
+                role: body.role,
+                status: body.status ?? .active,
+                groupUris: body.groupUris ?? [],
+                createdAt: now,
+                updatedAt: now
+            )
+            try await services.pdsClient.writeRecord(did: teamOwnerDid(team.uri), collection: "at.skej.team.member", rkey: rkey, record: record)
+            return try jsonResponse(TeamMemberSummary(rkey: rkey, uri: ATURI.record(did: teamOwnerDid(team.uri), collection: "at.skej.team.member", rkey: rkey), record: record), status: .created)
+        }
+
+        v1.patch("teams/:teamRkey/members/:memberDid") { request, context in
+            let viewer = try await authenticate(request, services: services)
+            let team = try await requireTeamAdmin(rkey: try context.parameters.require("teamRkey"), viewer: viewer, services: services)
+            let body = try await decodeJSONBody(request, as: UpsertMemberRequest.self)
+            let memberDid = try context.parameters.require("memberDid")
+            guard memberDid == body.memberDid else {
+                throw APIError(status: .badRequest, code: "invalid_member", message: "Member DID mismatch")
+            }
+            let now = Timestamp.iso8601()
+            let rkey = memberDid.replacingOccurrences(of: ":", with: "_")
+            let existing = try await services.pdsClient.getRecord(did: teamOwnerDid(team.uri), collection: "at.skej.team.member", rkey: rkey, as: TeamMemberRecord.self)
+            let record = TeamMemberRecord(
+                teamUri: team.uri,
+                memberDid: memberDid,
+                role: body.role,
+                status: body.status ?? existing?.status ?? .active,
+                groupUris: body.groupUris ?? existing?.groupUris ?? [],
+                createdAt: existing?.createdAt ?? now,
+                updatedAt: now
+            )
+            try await services.pdsClient.writeRecord(did: teamOwnerDid(team.uri), collection: "at.skej.team.member", rkey: rkey, record: record)
+            return try jsonResponse(TeamMemberSummary(rkey: rkey, uri: ATURI.record(did: teamOwnerDid(team.uri), collection: "at.skej.team.member", rkey: rkey), record: record))
+        }
+
+        v1.get("teams/:teamRkey/groups") { request, context in
+            let viewer = try await authenticate(request, services: services)
+            let team = try await requireVisibleTeam(rkey: try context.parameters.require("teamRkey"), viewer: viewer, services: services)
+            return try jsonResponse(ListGroupsResponse(groups: try await listTeamGroups(team: team, services: services)))
+        }
+
+        v1.post("teams/:teamRkey/groups") { request, context in
+            let viewer = try await authenticate(request, services: services)
+            let team = try await requireTeamAdmin(rkey: try context.parameters.require("teamRkey"), viewer: viewer, services: services)
+            let body = try await decodeJSONBody(request, as: UpsertGroupRequest.self)
+            let now = Timestamp.iso8601()
+            let rkey = newRkey()
+            let record = TeamGroupRecord(
+                teamUri: team.uri,
+                name: body.name,
+                memberDids: body.memberDids ?? [],
+                brandGrantUris: body.brandGrantUris ?? [],
+                createdAt: now,
+                updatedAt: now
+            )
+            try await services.pdsClient.writeRecord(did: teamOwnerDid(team.uri), collection: "at.skej.team.group", rkey: rkey, record: record)
+            return try jsonResponse(TeamGroupSummary(rkey: rkey, uri: ATURI.record(did: teamOwnerDid(team.uri), collection: "at.skej.team.group", rkey: rkey), record: record), status: .created)
+        }
+
+        v1.patch("teams/:teamRkey/groups/:groupRkey") { request, context in
+            let viewer = try await authenticate(request, services: services)
+            let team = try await requireTeamAdmin(rkey: try context.parameters.require("teamRkey"), viewer: viewer, services: services)
+            let rkey = try context.parameters.require("groupRkey")
+            let body = try await decodeJSONBody(request, as: UpsertGroupRequest.self)
+            let now = Timestamp.iso8601()
+            let existing = try await services.pdsClient.getRecord(did: teamOwnerDid(team.uri), collection: "at.skej.team.group", rkey: rkey, as: TeamGroupRecord.self)
+            let record = TeamGroupRecord(
+                teamUri: team.uri,
+                name: body.name,
+                memberDids: body.memberDids ?? existing?.memberDids ?? [],
+                brandGrantUris: body.brandGrantUris ?? existing?.brandGrantUris ?? [],
+                createdAt: existing?.createdAt ?? now,
+                updatedAt: now
+            )
+            try await services.pdsClient.writeRecord(did: teamOwnerDid(team.uri), collection: "at.skej.team.group", rkey: rkey, record: record)
+            return try jsonResponse(TeamGroupSummary(rkey: rkey, uri: ATURI.record(did: teamOwnerDid(team.uri), collection: "at.skej.team.group", rkey: rkey), record: record))
+        }
+
+        v1.get("teams/:teamRkey/brand-grants") { request, context in
+            let viewer = try await authenticate(request, services: services)
+            let team = try await requireVisibleTeam(rkey: try context.parameters.require("teamRkey"), viewer: viewer, services: services)
+            return try jsonResponse(ListBrandGrantsResponse(grants: try await listBrandGrants(team: team, services: services)))
+        }
+
+        v1.post("teams/:teamRkey/brand-grants") { request, context in
+            let viewer = try await authenticate(request, services: services)
+            let team = try await requireTeamAdmin(rkey: try context.parameters.require("teamRkey"), viewer: viewer, services: services)
+            let body = try await decodeJSONBody(request, as: UpsertBrandGrantRequest.self)
+            let now = Timestamp.iso8601()
+            let rkey = newRkey()
+            let record = BrandGrantRecord(
+                teamUri: team.uri,
+                brandDid: body.brandDid,
+                granteeType: body.granteeType,
+                grantee: body.grantee,
+                capabilities: Array(Set(body.capabilities)),
+                createdAt: now,
+                updatedAt: now
+            )
+            try await services.pdsClient.writeRecord(did: teamOwnerDid(team.uri), collection: "at.skej.team.brandGrant", rkey: rkey, record: record)
+            return try jsonResponse(BrandGrantSummary(rkey: rkey, uri: ATURI.record(did: teamOwnerDid(team.uri), collection: "at.skej.team.brandGrant", rkey: rkey), record: record), status: .created)
+        }
+
+        v1.patch("teams/:teamRkey/brand-grants/:grantRkey") { request, context in
+            let viewer = try await authenticate(request, services: services)
+            let team = try await requireTeamAdmin(rkey: try context.parameters.require("teamRkey"), viewer: viewer, services: services)
+            let rkey = try context.parameters.require("grantRkey")
+            let body = try await decodeJSONBody(request, as: UpsertBrandGrantRequest.self)
+            let now = Timestamp.iso8601()
+            let existing = try await services.pdsClient.getRecord(did: teamOwnerDid(team.uri), collection: "at.skej.team.brandGrant", rkey: rkey, as: BrandGrantRecord.self)
+            let record = BrandGrantRecord(
+                teamUri: team.uri,
+                brandDid: body.brandDid,
+                granteeType: body.granteeType,
+                grantee: body.grantee,
+                capabilities: Array(Set(body.capabilities)),
+                createdAt: existing?.createdAt ?? now,
+                updatedAt: now
+            )
+            try await services.pdsClient.writeRecord(did: teamOwnerDid(team.uri), collection: "at.skej.team.brandGrant", rkey: rkey, record: record)
+            return try jsonResponse(BrandGrantSummary(rkey: rkey, uri: ATURI.record(did: teamOwnerDid(team.uri), collection: "at.skej.team.brandGrant", rkey: rkey), record: record))
+        }
+
+        v1.get("teams/:teamRkey/brands") { request, context in
+            let viewer = try await authenticate(request, services: services)
+            let team = try await requireVisibleTeam(rkey: try context.parameters.require("teamRkey"), viewer: viewer, services: services)
+            return try jsonResponse(ListBrandsResponse(brands: try await listBrands(team: team, services: services)))
+        }
+
+        v1.post("teams/:teamRkey/brands") { request, context in
+            let viewer = try await authenticate(request, services: services)
+            let team = try await requireTeamAdmin(rkey: try context.parameters.require("teamRkey"), viewer: viewer, services: services)
+            let body = try await decodeJSONBody(request, as: UpsertBrandRequest.self)
+            let now = Timestamp.iso8601()
+            let rkey = body.brandDid.replacingOccurrences(of: ":", with: "_")
+            let record = SkejBrandRecord(
+                teamUri: team.uri,
+                ownerAdminDid: team.record.ownerAdminDid,
+                brandDid: body.brandDid,
+                status: body.status ?? .active,
+                createdAt: now,
+                updatedAt: now
+            )
+            try await services.pdsClient.writeRecord(did: body.brandDid, collection: "at.skej.brand", rkey: rkey, record: record)
+            return try jsonResponse(BrandSummary(rkey: rkey, uri: ATURI.record(did: body.brandDid, collection: "at.skej.brand", rkey: rkey), record: record), status: .created)
+        }
+
+        v1.patch("teams/:teamRkey/brands/:brandDid") { request, context in
+            let viewer = try await authenticate(request, services: services)
+            let team = try await requireTeamAdmin(rkey: try context.parameters.require("teamRkey"), viewer: viewer, services: services)
+            let brandDid = try context.parameters.require("brandDid")
+            let body = try await decodeJSONBody(request, as: UpsertBrandRequest.self)
+            guard brandDid == body.brandDid else {
+                throw APIError(status: .badRequest, code: "invalid_brand", message: "Brand DID mismatch")
+            }
+            let now = Timestamp.iso8601()
+            let rkey = brandDid.replacingOccurrences(of: ":", with: "_")
+            let existing = try await services.pdsClient.getRecord(did: brandDid, collection: "at.skej.brand", rkey: rkey, as: SkejBrandRecord.self)
+            let record = SkejBrandRecord(
+                teamUri: team.uri,
+                ownerAdminDid: team.record.ownerAdminDid,
+                brandDid: brandDid,
+                status: body.status ?? existing?.status ?? .active,
+                createdAt: existing?.createdAt ?? now,
+                updatedAt: now
+            )
+            try await services.pdsClient.writeRecord(did: brandDid, collection: "at.skej.brand", rkey: rkey, record: record)
+            return try jsonResponse(BrandSummary(rkey: rkey, uri: ATURI.record(did: brandDid, collection: "at.skej.brand", rkey: rkey), record: record))
+        }
+
+        v1.get("brands/:did/profile") { request, context in
+            let did = try context.parameters.require("did")
+            let viewer = try await authorize(did: did, request: request, services: services)
+            _ = try await requireBrandCapability(.create, brandDid: did, viewer: viewer, services: services)
+            let profile = try await services.pdsClient.getBrandProfile(did: did)
+            return try jsonResponse(profile)
+        }
+
+        v1.patch("brands/:did/profile") { request, context in
+            let did = try context.parameters.require("did")
+            let viewer = try await authorize(did: did, request: request, services: services)
+            _ = try await requireBrandCapability(.manage, brandDid: did, viewer: viewer, services: services)
+            let body = try await decodeJSONBody(request, as: UpdateBrandProfileRequest.self)
+            let profile = try await services.pdsClient.updateBrandProfile(did: did, profile: body)
+            try await services.store.insertAuditEvent(
+                did: did,
+                scheduleRkey: nil,
+                action: "brand_profile_updated",
+                message: "Brand profile updated.",
+                now: Timestamp.iso8601()
+            )
+            return try jsonResponse(profile)
+        }
     }
 
     v1.get("accounts/:did/schedules") { request, context in
@@ -547,8 +561,8 @@ public func buildRouter(services: SkejServices) -> Router<BasicRequestContext> {
     }
 
     v1.post("dev/seed") { _, _ in
-        guard services.config.environment != .prod else {
-            throw APIError(status: .notFound, code: "not_found", message: "Not found")
+        guard services.config.environment != .prod, services.config.proFeaturesEnabled else {
+            throw HTTPError(.notFound)
         }
         try await seedDemoData(services: services)
         return try jsonResponse(OKResponse(ok: true))
@@ -863,6 +877,7 @@ private func listSchedules(did: String, services: SkejServices) async throws -> 
 
 private func createSchedule(did: String, body: CreateScheduleRequest, viewer: Viewer, services: SkejServices) async throws -> Response {
     var record = body.record
+    coerceDraftWithoutProFeatures(&record, services: services)
     record.posts = record.posts.map(PostRecordCanonicalizer.canonicalize)
     if let shadowRecord = record.shadowRecord {
         record.shadowRecord = PostRecordCanonicalizer.canonicalizeFeedPost(shadowRecord)
@@ -902,6 +917,7 @@ private func updateSchedule(did: String, rkey: String, body: CreateScheduleReque
         throw APIError(status: .notFound, code: "not_found", message: "Schedule not found")
     }
     var record = body.record
+    coerceDraftWithoutProFeatures(&record, services: services)
     record.posts = record.posts.map(PostRecordCanonicalizer.canonicalize)
     if let shadowRecord = record.shadowRecord {
         record.shadowRecord = PostRecordCanonicalizer.canonicalizeFeedPost(shadowRecord)
@@ -1245,10 +1261,22 @@ private func authenticate(_ request: Request, services: SkejServices) async thro
     throw APIError(status: .unauthorized, code: "unauthorized", message: "Sign in required")
 }
 
+// Without Pro, "draft" must behave like a status value that doesn't exist.
+// Unrecognized statuses decode to .failed and are then stored as .scheduled,
+// so draft gets the same treatment: it becomes a plain scheduled post.
+private func coerceDraftWithoutProFeatures(_ record: inout SkejScheduleRecord, services: SkejServices) {
+    if !services.config.proFeaturesEnabled, record.status == .draft {
+        record.status = .scheduled
+    }
+}
+
 private func authorize(did: String, request: Request, services: SkejServices) async throws -> Viewer {
     let viewer = try await authenticate(request, services: services)
-    guard services.config.environment != .prod || viewer.did == did || viewer.defaultAccountDid == did else {
-        throw APIError(status: .forbidden, code: "forbidden", message: "Account is not available in this session")
+    // Without Pro, other-account DIDs must be indistinguishable from routes that
+    // don't exist, so this throws the same HTTPError the router emits for an
+    // unmatched path rather than a forbidden error.
+    guard services.config.proFeaturesEnabled || viewer.did == did || viewer.defaultAccountDid == did else {
+        throw HTTPError(.notFound)
     }
     return viewer
 }

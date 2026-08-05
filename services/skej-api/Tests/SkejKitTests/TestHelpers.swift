@@ -3,7 +3,7 @@ import Hummingbird
 import HTTPTypes
 import SkejKit
 
-func makeTestServices() async throws -> SkejServices {
+func makeTestServices(proFeaturesEnabled: Bool = true) async throws -> SkejServices {
     let store = try SQLiteStore(path: ":memory:")
     try await store.migrate()
     return SkejServices(
@@ -12,7 +12,8 @@ func makeTestServices() async throws -> SkejServices {
             environment: .test,
             publicOrigin: "http://localhost",
             sqlitePath: ":memory:",
-            workerEnabled: false
+            workerEnabled: false,
+            proFeaturesEnabled: proFeaturesEnabled
         ),
         store: store,
         pdsClient: InMemoryPDSClient(),

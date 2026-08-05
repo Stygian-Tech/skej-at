@@ -67,4 +67,27 @@ struct AppConfigTests {
 
         #expect(config.sqlitePath == "/var/lib/skej-api/data/skej.sqlite")
     }
+
+    @Test(arguments: ["local", "test", "dev"])
+    func proFeaturesDefaultOnOutsideProd(appEnv: String) {
+        let config = AppConfig.load(environment: ["APP_ENV": appEnv])
+        #expect(config.proFeaturesEnabled == true)
+    }
+
+    @Test func proFeaturesDefaultOffInProd() {
+        let config = AppConfig.load(environment: ["APP_ENV": "prod"])
+        #expect(config.proFeaturesEnabled == false)
+    }
+
+    @Test(arguments: ["false", "0", "no"])
+    func proFeaturesCanBeDisabledExplicitly(value: String) {
+        let config = AppConfig.load(environment: ["APP_ENV": "local", "SKEJ_PRO_ENABLED": value])
+        #expect(config.proFeaturesEnabled == false)
+    }
+
+    @Test(arguments: ["true", "1"])
+    func proFeaturesCanBeEnabledInProd(value: String) {
+        let config = AppConfig.load(environment: ["APP_ENV": "prod", "SKEJ_PRO_ENABLED": value])
+        #expect(config.proFeaturesEnabled == true)
+    }
 }
