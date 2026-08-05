@@ -48,9 +48,9 @@ container image normally runs as `nobody`. The volume mount is available only
 at runtime, so SQLite migrations stay in application startup rather than a
 pre-deploy command.
 
-## SQLite cutover
+## SQLite migration
 
-For each environment:
+The completed migration used this sequence for each environment:
 
 1. Disable the worker on Fly and stop the source machine.
 2. Copy the quiescent SQLite file and verify `PRAGMA integrity_check` locally.
@@ -62,6 +62,7 @@ For each environment:
 6. Exercise sign-in, schedule creation, rich-link publishing, and persistence
    across a Railway restart.
 
-Keep the stopped Fly machine and volume intact as rollback. Roll back by
-stopping Railway, restoring the prior DNS record, and starting Fly. Never run
-both workers against independently writable copies of the same environment.
+The former Fly apps and volumes have been removed. Railway is now the system of
+record for both SQLite databases. Before copying or restoring a database, stop
+the environment's worker and verify `PRAGMA integrity_check`; never run two
+workers against independently writable copies of the same environment.

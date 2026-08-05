@@ -111,4 +111,4 @@ Railway deploys `dev` from the `dev` branch and Production from `main` using
 required source validation pipeline and does not deploy infrastructure.
 
 See [Railway gateway migration and operations](docs/deployment/railway.md) for
-environment variables, SQLite migration, verification, and rollback.
+environment variables, SQLite migration, verification, and ongoing operations.
