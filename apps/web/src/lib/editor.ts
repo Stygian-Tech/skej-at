@@ -187,7 +187,7 @@ export function buildScheduleRecord(
     updatedAt: timestamp,
     status: "scheduled",
     recordType: "app.bsky.feed.post",
-    publishRkey: generateULID(now),
+    publishRkey: generateTID(now),
     retry: {
       attemptCount: 0,
       maxAttempts: 8,
@@ -205,17 +205,20 @@ export function localDatetimeValue(date: Date): string {
   return local.toISOString().slice(0, 16);
 }
 
-export function generateULID(date = new Date()): string {
-  const alphabet = "0123456789ABCDEFGHJKMNPQRSTVWXYZ";
-  let time = date.getTime();
-  let encodedTime = "";
-  for (let index = 0; index < 10; index += 1) {
-    encodedTime = alphabet[time % 32] + encodedTime;
-    time = Math.floor(time / 32);
+const TID_ALPHABET = "234567abcdefghijklmnopqrstuvwxyz";
+let lastTIDValue = BigInt(0);
+
+export function generateTID(date = new Date()): string {
+  const micros = BigInt(date.getTime()) * BigInt(1_000);
+  const clockID = BigInt(Math.floor(Math.random() * 1_024));
+  const candidate = (micros << BigInt(10)) | clockID;
+  let value = candidate > lastTIDValue ? candidate : lastTIDValue + BigInt(1);
+  lastTIDValue = value;
+
+  let encoded = "";
+  for (let index = 0; index < 13; index += 1) {
+    encoded = TID_ALPHABET[Number(value & BigInt(31))] + encoded;
+    value >>= BigInt(5);
   }
-  let random = "";
-  for (let index = 0; index < 16; index += 1) {
-    random += alphabet[Math.floor(Math.random() * alphabet.length)];
-  }
-  return encodedTime + random;
+  return encoded;
 }

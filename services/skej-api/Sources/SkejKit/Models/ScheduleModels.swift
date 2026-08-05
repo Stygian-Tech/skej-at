@@ -329,7 +329,7 @@ public struct SkejScheduleRecord: Codable, Equatable, Sendable {
             createdAt: createdAt,
             updatedAt: updatedAt,
             status: status,
-            publishRkey: ULID.generate(),
+            publishRkey: ATProtoTID.generate(),
             lastError: lastError,
             posts: posts
         )
@@ -352,7 +352,7 @@ public struct SkejScheduleRecord: Codable, Equatable, Sendable {
         self.status = try container.decode(ScheduleStatus.self, forKey: .status)
         self.recordType = try container.decodeIfPresent(String.self, forKey: .recordType) ?? "app.bsky.feed.post"
         self.shadowRecord = try container.decodeIfPresent(JSONValue.self, forKey: .shadowRecord)
-        self.publishRkey = try container.decodeIfPresent(String.self, forKey: .publishRkey) ?? ULID.generate()
+        self.publishRkey = try container.decodeIfPresent(String.self, forKey: .publishRkey) ?? ATProtoTID.generate()
         self.publishedUri = try container.decodeIfPresent(String.self, forKey: .publishedUri)
         self.publishedCid = try container.decodeIfPresent(String.self, forKey: .publishedCid)
         self.retry = try container.decodeIfPresent(RetryState.self, forKey: .retry) ?? RetryState()
@@ -999,5 +999,39 @@ public enum ULID {
             random.append(alphabet[Int.random(in: 0..<alphabet.count)])
         }
         return String(time) + random
+    }
+}
+
+public enum ATProtoTID {
+    private static let alphabet = Array("234567abcdefghijklmnopqrstuvwxyz")
+    private static let clockID = UInt64.random(in: 0..<1_024)
+    private static let lock = NSLock()
+    nonisolated(unsafe) private static var lastValue: UInt64 = 0
+
+    public static func generate(date: Date = Date()) -> String {
+        let seconds = max(date.timeIntervalSince1970, 0)
+        let micros = UInt64(seconds * 1_000_000)
+        let candidate = (micros << 10) | clockID
+
+        lock.lock()
+        let value = max(candidate, lastValue &+ 1)
+        lastValue = value
+        lock.unlock()
+
+        var encoded = Array(repeating: Character("2"), count: 13)
+        var remaining = value
+        for index in stride(from: 12, through: 0, by: -1) {
+            encoded[index] = alphabet[Int(remaining & 31)]
+            remaining >>= 5
+        }
+        return String(encoded)
+    }
+
+    public static func isValid(_ value: String) -> Bool {
+        guard value.count == 13,
+              let first = value.first,
+              "234567abcdefghij".contains(first)
+        else { return false }
+        return value.allSatisfy { alphabet.contains($0) }
     }
 }

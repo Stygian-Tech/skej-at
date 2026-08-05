@@ -54,6 +54,36 @@ struct WorkerTests {
         #expect(publishedRecord?.publishedUri == job?.publishedUri)
     }
 
+    @Test func workerUpgradesLegacyPublishRkeyToTID() async throws {
+        let store = try SQLiteStore(path: ":memory:")
+        try await store.migrate()
+        let pds = InMemoryPDSClient()
+        var record = makeRecord(scheduledFor: "2026-01-01T10:00:00Z")
+        record.publishRkey = "01KZ7M5Z3M6D4TZS9F67ESBWC1"
+        try await pds.writeSchedule(did: "did:plc:test", rkey: "3llegacy", record: record)
+        try await store.upsertScheduleJob(
+            ScheduledJob(
+                did: "did:plc:test",
+                rkey: "3llegacy",
+                scheduledAt: record.scheduledAt,
+                status: .scheduled,
+                attempts: 0,
+                publishRkey: record.publishRkey
+            ),
+            now: "2026-01-01T09:00:00Z"
+        )
+        let worker = ScheduleWorker(store: store, pdsClient: pds, logger: Logger(label: "test"))
+
+        await worker.runTick(now: ISO8601DateFormatter().date(from: "2026-01-01T10:00:01Z")!)
+
+        let job = try await store.scheduleJob(did: "did:plc:test", rkey: "3llegacy")
+        let publishedRecord = try await pds.getSchedule(did: "did:plc:test", rkey: "3llegacy")
+        #expect(job?.status == .published)
+        #expect(job?.publishRkey == publishedRecord?.publishRkey)
+        #expect(ATProtoTID.isValid(job?.publishRkey ?? ""))
+        #expect(job?.publishedUri?.hasSuffix("/\(job?.publishRkey ?? "")") == true)
+    }
+
     @Test func workerRetriesTransientFailuresForRecovery() async throws {
         let store = try SQLiteStore(path: ":memory:")
         try await store.migrate()
