@@ -6,7 +6,7 @@ import Testing
 struct PostRecordCanonicalizerTests {
     @Test func detectsMultipleURLsWithUTF8ByteOffsetsAndPunctuation() throws {
         let text = "👋 https://example.com, then (https://bsky.app)."
-        let facets = PostRecordCanonicalizer.linkFacets(in: text)
+        let facets = PostRecordCanonicalizer.facets(in: text)
 
         #expect(facets?.count == 2)
         #expect(byteRange(facets?[0]) == 5..<24)
@@ -41,7 +41,7 @@ struct PostRecordCanonicalizerTests {
             ]),
         ])
 
-        let facets = PostRecordCanonicalizer.linkFacets(
+        let facets = PostRecordCanonicalizer.facets(
             in: "@sam https://example.com",
             preserving: [staleLink, mention]
         )
@@ -59,13 +59,13 @@ struct PostRecordCanonicalizerTests {
             ]),
             "features": .array([
                 .object([
-                    "$type": .string("app.bsky.richtext.facet#tag"),
-                    "tag": .string("bad"),
+                    "$type": .string("app.bsky.richtext.facet#mention"),
+                    "did": .string("did:plc:test"),
                 ]),
             ]),
         ])
 
-        let facets = PostRecordCanonicalizer.linkFacets(
+        let facets = PostRecordCanonicalizer.facets(
             in: "read https://example.com",
             preserving: [overlap]
         )
@@ -74,8 +74,54 @@ struct PostRecordCanonicalizerTests {
         #expect(linkURI(facets?[0]) == "https://example.com")
     }
 
+    @Test func detectsTagsWithUTF8ByteOffsetsAndTrailingPunctuation() {
+        let text = "👋 #skej and #dev, not #123 or mid#word"
+        let facets = PostRecordCanonicalizer.facets(in: text)
+
+        #expect(facets?.count == 2)
+        #expect(tagValue(facets?[0]) == "skej")
+        #expect(byteRange(facets?[0]) == 5..<10)
+        #expect(tagValue(facets?[1]) == "dev")
+        #expect(byteRange(facets?[1]) == 15..<19)
+    }
+
+    @Test func ordersTagAndLinkFacetsTogetherAndSkipsURLFragments() {
+        let facets = PostRecordCanonicalizer.facets(
+            in: "#skej https://example.com/docs#anchor #done"
+        )
+
+        #expect(facets?.count == 3)
+        #expect(tagValue(facets?[0]) == "skej")
+        #expect(linkURI(facets?[1]) == "https://example.com/docs#anchor")
+        #expect(tagValue(facets?[2]) == "done")
+    }
+
+    @Test func skipsOverlongTagsAndReplacesStaleTagFacets() {
+        let stale: JSONValue = .object([
+            "index": .object([
+                "byteStart": .number(40),
+                "byteEnd": .number(44),
+            ]),
+            "features": .array([
+                .object([
+                    "$type": .string("app.bsky.richtext.facet#tag"),
+                    "tag": .string("stale"),
+                ]),
+            ]),
+        ])
+        let overlong = String(repeating: "a", count: 65)
+
+        let facets = PostRecordCanonicalizer.facets(
+            in: "#\(overlong) #ok",
+            preserving: [stale]
+        )
+
+        #expect(facets?.count == 1)
+        #expect(tagValue(facets?[0]) == "ok")
+    }
+
     @Test func ignoresMalformedURLsAndKeepsBalancedParentheses() {
-        let facets = PostRecordCanonicalizer.linkFacets(
+        let facets = PostRecordCanonicalizer.facets(
             in: "bad http:// and good https://example.com/docs_(v2))."
         )
 
@@ -155,6 +201,10 @@ struct PostRecordCanonicalizerTests {
 
     private func mentionDID(_ facet: JSONValue?) -> String? {
         featureValue(facet, type: "app.bsky.richtext.facet#mention", key: "did")
+    }
+
+    private func tagValue(_ facet: JSONValue?) -> String? {
+        featureValue(facet, type: "app.bsky.richtext.facet#tag", key: "tag")
     }
 
     private func featureValue(_ facet: JSONValue?, type: String, key: String) -> String? {
