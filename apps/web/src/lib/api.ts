@@ -21,6 +21,23 @@ function didPath(did: string): string {
   return did;
 }
 
+/** Carries the API's error code so callers can branch on it, not on copy. */
+export class SkejApiError extends Error {
+  readonly code: string;
+  readonly status: number;
+
+  constructor(message: string, code: string, status: number) {
+    super(message);
+    this.name = "SkejApiError";
+    this.code = code;
+    this.status = status;
+  }
+}
+
+export function isReauthRequired(error: unknown): boolean {
+  return error instanceof SkejApiError && error.code === "account_needs_reauth";
+}
+
 async function requestJSON<T>(input: RequestInfo | URL, init?: RequestInit): Promise<T> {
   const response = await fetch(input, {
     credentials: "include",
@@ -35,8 +52,10 @@ async function requestJSON<T>(input: RequestInfo | URL, init?: RequestInit): Pro
     const body = (await response.json().catch(() => null)) as
       | { message?: string; error?: string }
       | null;
-    throw new Error(
-      body?.message ?? body?.error ?? "Skej could not load this right now. Try again soon."
+    throw new SkejApiError(
+      body?.message ?? body?.error ?? "Skej could not load this right now. Try again soon.",
+      body?.error ?? "unknown_error",
+      response.status
     );
   }
 

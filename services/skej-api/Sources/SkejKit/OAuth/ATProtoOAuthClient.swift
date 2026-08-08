@@ -402,6 +402,10 @@ public enum HTTPClientError: Error, Equatable {
     case badStatus(Int, String, [String: String])
 }
 
+struct OAuthErrorResponse: Decodable {
+    let error: String
+}
+
 public struct DPoPKey: @unchecked Sendable {
     private let privateKey: P256.Signing.PrivateKey
 
