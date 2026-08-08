@@ -218,4 +218,17 @@ public actor InMemoryPDSClient: PDSClient {
 public enum PDSClientError: Error, Equatable {
     case publishFailed(String)
     case notConfigured
+
+    /// True when `error` means the account's credentials are gone or rejected,
+    /// as opposed to the PDS being unreachable. Only these warrant sending the
+    /// account back through OAuth; a transient failure resolves on its own.
+    public static func isAuthFailure(_ error: Error) -> Bool {
+        if case PDSClientError.notConfigured = error { return true }
+        guard case HTTPClientError.badStatus(let status, let body, _) = error else { return false }
+        if status == 401 || status == 403 { return true }
+        guard status == 400,
+              let oauthError = try? JSONDecoder().decode(OAuthErrorResponse.self, from: Data(body.utf8))
+        else { return false }
+        return oauthError.error == "invalid_grant"
+    }
 }

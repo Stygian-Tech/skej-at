@@ -1,6 +1,13 @@
 import { afterEach, describe, expect, it, mock } from "bun:test";
 
-import { createSchedule, hydrateLinkPreview, logout, startOAuth } from "@/lib/api";
+import {
+  SkejApiError,
+  createSchedule,
+  hydrateLinkPreview,
+  isReauthRequired,
+  logout,
+  startOAuth,
+} from "@/lib/api";
 
 const originalFetch = globalThis.fetch;
 
@@ -89,5 +96,56 @@ describe("api client", () => {
 
     expect(embed.$type).toBe("app.bsky.embed.external");
     expect(embed.external.title).toBe("Example");
+  });
+
+  it("surfaces the reconnect code so callers can prompt instead of showing a raw error", async () => {
+    globalThis.fetch = mock(
+      async () =>
+        new Response(
+          JSON.stringify({
+            error: "account_needs_reauth",
+            message: "Reconnect this account to keep posting from it.",
+          }),
+          { status: 409, headers: { "Content-Type": "application/json" } }
+        )
+    ) as unknown as typeof fetch;
+
+    const error = await logout().catch((caught: unknown) => caught);
+
+    expect(error).toBeInstanceOf(SkejApiError);
+    expect(isReauthRequired(error)).toBe(true);
+    expect((error as SkejApiError).status).toBe(409);
+    expect((error as SkejApiError).message).toBe(
+      "Reconnect this account to keep posting from it."
+    );
+  });
+
+  it("does not mistake other failures for a reconnect prompt", async () => {
+    globalThis.fetch = mock(
+      async () =>
+        new Response(JSON.stringify({ error: "not_found", message: "Schedule not found" }), {
+          status: 404,
+          headers: { "Content-Type": "application/json" },
+        })
+    ) as unknown as typeof fetch;
+
+    const error = await logout().catch((caught: unknown) => caught);
+
+    expect(isReauthRequired(error)).toBe(false);
+    expect(error).toBeInstanceOf(Error);
+    expect((error as Error).message).toBe("Schedule not found");
+  });
+
+  it("still produces a readable error when the body is not JSON", async () => {
+    globalThis.fetch = mock(
+      async () => new Response("<html>502</html>", { status: 502 })
+    ) as unknown as typeof fetch;
+
+    const error = await logout().catch((caught: unknown) => caught);
+
+    expect(isReauthRequired(error)).toBe(false);
+    expect((error as Error).message).toBe(
+      "Skej could not load this right now. Try again soon."
+    );
   });
 });
