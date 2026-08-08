@@ -1,6 +1,7 @@
 import Foundation
 import Hummingbird
 import HTTPTypes
+import Logging
 
 public struct ErrorBody: Codable, Sendable {
     public let error: String
@@ -45,6 +46,17 @@ public func decodeJSONBody<T: Decodable>(_ request: Request, as type: T.Type) as
 }
 
 public func errorResponse(_ error: Error) -> Response {
+    // Reads fall back to cached records, so an auth failure reaching here came
+    // from a write. The account's Skej session is still valid — only its PDS
+    // credentials are — so this must not be a 401, which the web client treats
+    // as "signed out" and would bounce the user to the sign-in screen.
+    if PDSClientError.isAuthFailure(error) {
+        return errorResponse(APIError(
+            status: .conflict,
+            code: "account_needs_reauth",
+            message: "Reconnect this account to keep posting from it."
+        ))
+    }
     if let apiError = error as? APIError {
         return (try? jsonResponse(
             ErrorBody(error: apiError.code, message: apiError.message),
@@ -65,6 +77,8 @@ public func errorResponse(_ error: Error) -> Response {
 }
 
 public struct ErrorMiddleware<Context: RequestContext>: RouterMiddleware {
+    private let logger = Logger(label: "skej.errors")
+
     public init() {}
 
     public func handle(
@@ -75,6 +89,15 @@ public struct ErrorMiddleware<Context: RequestContext>: RouterMiddleware {
         do {
             return try await next(request, context)
         } catch {
+            // These all map to deliberate responses; anything else became an
+            // opaque 500, so log it or the cause is unrecoverable after the fact.
+            if !(error is APIError), !(error is HTTPError), !PDSClientError.isAuthFailure(error) {
+                logger.error("unhandled request error", metadata: [
+                    "method": "\(request.method)",
+                    "path": "\(request.uri.path)",
+                    "error": "\(String(reflecting: error))",
+                ])
+            }
             return errorResponse(error)
         }
     }

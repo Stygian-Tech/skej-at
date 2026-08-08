@@ -248,18 +248,12 @@ public struct ScheduleWorker: Sendable {
     }
 
     static func classify(_ error: Error) -> ScheduleError {
-        if case PDSClientError.notConfigured = error {
+        if PDSClientError.isAuthFailure(error) {
             return ScheduleError(code: .authInvalid, message: "Reconnect this account before publishing.")
         }
         if case HTTPClientError.badStatus(let status, let body, let headers) = error {
-            if status == 401 || status == 403 {
-                return ScheduleError(code: .authInvalid, message: "Reconnect this account before publishing.")
-            }
             if status == 400 {
                 if let oauthError = try? JSONDecoder().decode(OAuthErrorResponse.self, from: Data(body.utf8)) {
-                    if oauthError.error == "invalid_grant" {
-                        return ScheduleError(code: .authInvalid, message: "Reconnect this account before publishing.")
-                    }
                     if oauthError.error == "invalid_client_metadata" {
                         return ScheduleError(
                             code: .transientNetwork,
@@ -370,10 +364,6 @@ public struct ScheduleWorker: Sendable {
         else { return nil }
         return uri
     }
-}
-
-private struct OAuthErrorResponse: Decodable {
-    let error: String
 }
 
 public enum Timestamp {

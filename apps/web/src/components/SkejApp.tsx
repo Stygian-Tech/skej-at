@@ -45,6 +45,7 @@ import {
   duplicateSchedule,
   getViewer,
   hydrateLinkPreview,
+  isReauthRequired,
   listAccountSchedules,
   listAccounts,
   listSchedules,
@@ -52,6 +53,7 @@ import {
   publishNow,
   recordScheduleView,
   retrySchedule,
+  startOAuth,
   updateSchedule,
 } from "@/lib/api";
 import {
@@ -321,6 +323,74 @@ function ViewerAvatar({ viewer }: { viewer: Viewer | null }) {
   );
 }
 
+function accountLabel(account: ManagedAccount) {
+  return account.handle ?? account.displayName ?? account.did;
+}
+
+function needsReauth(account: ManagedAccount | null | undefined) {
+  return account?.status === "needs_reauth";
+}
+
+/**
+ * Reconnecting is just the normal OAuth start with the handle prefilled — the
+ * user never has to remember or retype it. Accounts with no handle can't be
+ * routed automatically, so those fall back to the sign-in form.
+ */
+function reconnectAccount(account: ManagedAccount) {
+  if (!account.handle) {
+    window.location.href = "/app#connect-account";
+    return;
+  }
+  window.location.href = startOAuth(account.handle);
+}
+
+function ReconnectBanner({
+  accounts,
+  selectedAccountDid,
+}: {
+  accounts: ManagedAccount[];
+  selectedAccountDid: string | null;
+}) {
+  const stale = accounts.filter(needsReauth);
+  if (stale.length === 0) return null;
+
+  // The account the user is looking at is the one they can act on right now, so
+  // it leads; any others are named so a reconnect doesn't feel like whack-a-mole.
+  const primary = stale.find((account) => account.did === selectedAccountDid) ?? stale[0];
+  const others = stale.filter((account) => account.did !== primary.did);
+
+  return (
+    <div
+      className="flex flex-col gap-3 rounded-[1.5rem] border border-destructive/30 bg-muted px-4 py-3 sm:flex-row sm:items-center sm:justify-between"
+      role="status"
+    >
+      <div className="flex items-start gap-3">
+        <AlertCircle className="mt-0.5 shrink-0 text-destructive" />
+        <div className="flex flex-col gap-1">
+          <p className="text-sm font-bold text-destructive">
+            Bluesky needs you to reconnect {accountLabel(primary)}.
+          </p>
+          <p className="text-xs font-semibold text-muted-foreground">
+            Scheduled posts stay queued and publish once you reconnect. You may be
+            seeing a slightly stale queue until then.
+            {others.length > 0
+              ? ` Also waiting: ${others.map(accountLabel).join(", ")}.`
+              : ""}
+          </p>
+        </div>
+      </div>
+      <Button
+        className="shrink-0"
+        onClick={() => reconnectAccount(primary)}
+        size="sm"
+      >
+        <RefreshCw data-icon="inline-start" />
+        Reconnect
+      </Button>
+    </div>
+  );
+}
+
 export function SkejApp() {
   const [authStatus, setAuthStatus] = React.useState<AuthStatus>("loading");
   const [viewer, setViewer] = React.useState<Viewer | null>(null);
@@ -455,6 +525,10 @@ export function SkejApp() {
           ? current
           : sortedRecords[0]?.rkey ?? null
       );
+      // Listing schedules is what makes the API notice dead credentials, so this
+      // is the moment the account status can have changed. Re-reading it here is
+      // what lets the banner appear without a page reload.
+      setAccounts(await listAccounts());
     } finally {
       setIsQueueLoading(false);
     }
@@ -705,6 +779,24 @@ export function SkejApp() {
     setEditingRkey(null);
   }
 
+  /**
+   * A write rejected for stale PDS credentials is not a failure the user can fix
+   * by retrying, so it re-reads the account list to raise the reconnect banner
+   * and says what to do instead of surfacing the raw message.
+   */
+  async function reportActionError(error: unknown, fallback: string) {
+    if (isReauthRequired(error)) {
+      setActionError("Reconnect this account to keep posting from it.");
+      try {
+        setAccounts(await listAccounts());
+      } catch {
+        // The banner is a nicety; never let refreshing it mask the real error.
+      }
+      return;
+    }
+    setActionError(error instanceof Error ? friendlyErrorMessage(error.message) : fallback);
+  }
+
   async function scheduleDraft() {
     setActionError(null);
     setActionMessage(null);
@@ -731,11 +823,7 @@ export function SkejApp() {
       resetComposer();
       setScheduleOpen(false);
     } catch (error) {
-      setActionError(
-        error instanceof Error
-          ? friendlyErrorMessage(error.message)
-          : "Could not schedule post."
-      );
+      await reportActionError(error, "Could not schedule post.");
     } finally {
       setIsMutating(false);
     }
@@ -750,9 +838,7 @@ export function SkejApp() {
       setSelectedRkey(updated.rkey);
       setActionMessage("Retry requested.");
     } catch (error) {
-      setActionError(
-        error instanceof Error ? friendlyErrorMessage(error.message) : "Could not retry post."
-      );
+      await reportActionError(error, "Could not retry post.");
     } finally {
       setIsMutating(false);
     }
@@ -768,11 +854,7 @@ export function SkejApp() {
       if (editingRkey === item.rkey) resetComposer();
       setActionMessage("Schedule canceled.");
     } catch (error) {
-      setActionError(
-        error instanceof Error
-          ? friendlyErrorMessage(error.message)
-          : "Could not delete schedule."
-      );
+      await reportActionError(error, "Could not delete schedule.");
     } finally {
       setIsMutating(false);
     }
@@ -787,11 +869,7 @@ export function SkejApp() {
       setSelectedRkey(published.rkey);
       setActionMessage("Post published.");
     } catch (error) {
-      setActionError(
-        error instanceof Error
-          ? friendlyErrorMessage(error.message)
-          : "Could not publish post."
-      );
+      await reportActionError(error, "Could not publish post.");
     } finally {
       setIsMutating(false);
     }
@@ -806,11 +884,7 @@ export function SkejApp() {
       setSelectedRkey(duplicated.rkey);
       setActionMessage("Schedule duplicated as a draft.");
     } catch (error) {
-      setActionError(
-        error instanceof Error
-          ? friendlyErrorMessage(error.message)
-          : "Could not duplicate schedule."
-      );
+      await reportActionError(error, "Could not duplicate schedule.");
     } finally {
       setIsMutating(false);
     }
@@ -911,7 +985,9 @@ export function SkejApp() {
                         >
                           {accounts.map((account) => (
                             <option key={account.did} value={account.did}>
-                              {account.handle ?? account.did}
+                              {needsReauth(account)
+                                ? `⚠ ${accountLabel(account)}`
+                                : accountLabel(account)}
                             </option>
                           ))}
                         </select>
@@ -974,6 +1050,10 @@ export function SkejApp() {
         <div className="sticky top-[5.75rem] z-30 flex items-center gap-2 rounded-[1.25rem] border border-accent/70 bg-accent px-3 py-2 text-xs font-black text-accent-foreground shadow-[0_10px_28px_rgba(216,188,83,0.18)]">
           <span>Work in progress. Keep a copy of mission-critical content.</span>
         </div>
+
+        {isAuthenticated ? (
+          <ReconnectBanner accounts={accounts} selectedAccountDid={selectedAccountDid} />
+        ) : null}
 
         {actionError ? (
           <div className="flex items-start gap-3 rounded-[1.5rem] border border-destructive/30 bg-muted px-4 py-3 text-sm font-bold text-destructive">

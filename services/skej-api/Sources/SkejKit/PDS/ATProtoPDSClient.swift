@@ -37,24 +37,37 @@ public struct ATProtoPDSClient: PDSClient {
     }
 
     public func getRecord<Value: Codable & Sendable>(did: String, collection: String, rkey: String, as type: Value.Type) async throws -> Value? {
-        let session = try await authenticatedSession(did: did)
-        let url = "\(session.token.pdsEndpoint)/xrpc/com.atproto.repo.getRecord?repo=\(urlEncode(did))&collection=\(urlEncode(collection))&rkey=\(urlEncode(rkey))"
-        let data = try await xrpcData(session: session, method: "GET", url: url, body: nil)
-        let response = try JSONDecoder().decode(GetRecordResponse<Value>.self, from: data)
-        try await store.writeProtocolRecord(
-            did: did,
-            collection: collection,
-            rkey: rkey,
-            record: response.value,
-            now: Timestamp.iso8601()
-        )
-        return response.value
+        do {
+            let session = try await authenticatedSession(did: did)
+            let url = "\(session.token.pdsEndpoint)/xrpc/com.atproto.repo.getRecord?repo=\(urlEncode(did))&collection=\(urlEncode(collection))&rkey=\(urlEncode(rkey))"
+            let data = try await xrpcData(session: session, method: "GET", url: url, body: nil)
+            let response = try JSONDecoder().decode(GetRecordResponse<Value>.self, from: data)
+            try await store.writeProtocolRecord(
+                did: did,
+                collection: collection,
+                rkey: rkey,
+                record: response.value,
+                now: Timestamp.iso8601()
+            )
+            return response.value
+        } catch {
+            // Same fallback as listRecords: an unreachable or unauthenticated PDS
+            // reads through to the local cache rather than failing the request.
+            // Deletes made through Skej clear the cache, so this returns nil for
+            // them; a record deleted directly on the PDS reads stale until a
+            // successful fetch replaces it.
+            await flagReauthIfNeeded(did: did, error: error)
+            return try await store.protocolRecord(did: did, collection: collection, rkey: rkey, as: type)
+        }
     }
 
     public func listRecords<Value: Codable & Sendable>(did: String, collection: String, as type: Value.Type) async throws -> [String: Value] {
-        let session = try await authenticatedSession(did: did)
-        let url = "\(session.token.pdsEndpoint)/xrpc/com.atproto.repo.listRecords?repo=\(urlEncode(did))&collection=\(urlEncode(collection))&limit=100"
         do {
+            // An account with no OAuth session is a normal state here — reads span
+            // every managed account, not just the signed-in one — so it falls back
+            // to the local cache like any other failure to reach the PDS.
+            let session = try await authenticatedSession(did: did)
+            let url = "\(session.token.pdsEndpoint)/xrpc/com.atproto.repo.listRecords?repo=\(urlEncode(did))&collection=\(urlEncode(collection))&limit=100"
             let data = try await xrpcData(session: session, method: "GET", url: url, body: nil)
             let response = try JSONDecoder().decode(ListRecordsResponse<Value>.self, from: data)
             var records: [String: Value] = [:]
@@ -71,6 +84,7 @@ public struct ATProtoPDSClient: PDSClient {
             }
             return records
         } catch {
+            await flagReauthIfNeeded(did: did, error: error)
             return try await store.listProtocolRecords(did: did, collection: collection, as: type)
         }
     }
@@ -346,6 +360,17 @@ public struct ATProtoPDSClient: PDSClient {
             url: "\(session.token.pdsEndpoint)/xrpc/com.atproto.server.getSession",
             body: nil
         )
+    }
+
+    /// Reads serve stale cache when the PDS rejects them, so without this an
+    /// account whose token died between publishes would look healthy until the
+    /// next publish attempt. Marking it here is what puts the reconnect prompt
+    /// in front of the user while they are still looking at the app.
+    private func flagReauthIfNeeded(did: String, error: Error) async {
+        guard PDSClientError.isAuthFailure(error) else { return }
+        // Best-effort: a read already degraded to cache should not additionally
+        // fail because the status write did.
+        try? await store.markAccountNeedsReauth(did: did, now: Timestamp.iso8601())
     }
 
     private func authenticatedSession(did: String) async throws -> AuthenticatedATProtoSession {

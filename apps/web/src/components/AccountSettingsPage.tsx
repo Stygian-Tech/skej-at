@@ -43,6 +43,7 @@ import {
   listTeamMembers,
   listTeams,
   logout,
+  startOAuth,
   updateBrandProfile,
 } from "@/lib/api";
 import {
@@ -550,20 +551,60 @@ export function AccountSettingsPage() {
                     >
                       {accounts.map((account) => (
                         <option key={account.did} value={account.did}>
-                          {account.handle ?? account.did}
+                          {account.status === "needs_reauth"
+                            ? `⚠ ${account.handle ?? account.did}`
+                            : account.handle ?? account.did}
                         </option>
                       ))}
                     </select>
                     <ChevronDown className="pointer-events-none absolute right-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
                   </div>
                   <div className="rounded-2xl bg-muted px-4 py-3">
-                    <div className="text-sm font-black">
-                      {selectedAccount?.displayName ?? selectedAccount?.handle ?? "Account"}
+                    <div className="flex items-center justify-between gap-2">
+                      <div className="text-sm font-black">
+                        {selectedAccount?.displayName ?? selectedAccount?.handle ?? "Account"}
+                      </div>
+                      {selectedAccount ? (
+                        <Badge
+                          variant={
+                            selectedAccount.status === "needs_reauth"
+                              ? "warning"
+                              : selectedAccount.status === "disabled"
+                                ? "failed"
+                                : "success"
+                          }
+                        >
+                          {selectedAccount.status === "needs_reauth"
+                            ? "Reconnect"
+                            : selectedAccount.status === "disabled"
+                              ? "Disabled"
+                              : "Connected"}
+                        </Badge>
+                      ) : null}
                     </div>
                     <div className="truncate text-xs font-semibold text-muted-foreground">
                       {selectedAccount?.did}
                     </div>
                   </div>
+                  {selectedAccount?.status === "needs_reauth" ? (
+                    <div className="flex flex-col gap-3 rounded-2xl border border-destructive/30 px-4 py-3">
+                      <p className="text-xs font-semibold text-muted-foreground">
+                        Bluesky stopped accepting Skej&apos;s access for this account.
+                        Queued posts stay put and publish once you reconnect.
+                      </p>
+                      <Button
+                        onClick={() => {
+                          window.location.href = selectedAccount.handle
+                            ? startOAuth(selectedAccount.handle)
+                            : "/app#connect-account";
+                        }}
+                        size="sm"
+                      >
+                        <RefreshCw data-icon="inline-start" />
+                        Reconnect {selectedAccount.handle ?? "account"}
+                      </Button>
+                    </div>
+                  ) : null}
                 </CardContent>
               </Card>
 
