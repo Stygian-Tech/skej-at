@@ -29,25 +29,16 @@ public func buildRouter(services: SkejServices) -> Router<BasicRequestContext> {
         guard !handle.isEmpty else {
             throw APIError(status: .badRequest, code: "missing_handle", message: "Bluesky handle is required")
         }
-        let state = randomToken()
-        let pkceVerifier = randomToken()
-        let nonce = randomToken()
-        let start = try await services.oauthClient.start(
+        let purpose = OAuthPurpose(rawValue: request.uri.queryParameters.get("purpose") ?? "") ?? .signIn
+        if purpose == .brandConnect {
+            _ = try await authenticate(request, services: services)
+        }
+        let start = try await startOAuthFlow(
             handle: handle,
-            state: state,
-            pkceVerifier: pkceVerifier,
-            nonce: nonce
-        )
-        try await services.store.createOAuthState(
-            state: state,
-            handle: handle,
-            pkceVerifier: pkceVerifier,
-            nonce: nonce,
-            authServer: start.authServer,
-            tokenEndpoint: start.tokenEndpoint,
-            pdsEndpoint: start.pdsEndpoint,
-            dpopKeyJSON: start.dpopKeyJSON,
-            expiresAt: Timestamp.iso8601(Date().addingTimeInterval(600))
+            purpose: purpose,
+            inviteToken: request.uri.queryParameters.get("inviteToken"),
+            returnTo: request.uri.queryParameters.get("returnTo"),
+            services: services
         )
         var headers = HTTPFields()
         headers[.location] = start.redirectURL
@@ -66,41 +57,13 @@ public func buildRouter(services: SkejServices) -> Router<BasicRequestContext> {
             throw APIError(status: .badRequest, code: "invalid_state", message: "OAuth state expired or was already used")
         }
         let completion = try await services.oauthClient.complete(state: oauthState, code: code)
-        let session = randomToken()
-        try await services.store.createOAuthSession(completion.session, now: now)
-        try await services.store.upsertManagedAccount(
-            ManagedAccount(
-                did: completion.viewer.did,
-                handle: completion.viewer.handle,
-                displayName: completion.viewer.displayName,
-                avatar: completion.viewer.avatar,
-                pdsEndpoint: oauthState.pdsEndpoint,
-                status: .active,
-                isDefault: true
-            ),
+        return try await finishOAuthCallback(
+            oauthState: oauthState,
+            completion: completion,
+            request: request,
+            services: services,
             now: now
         )
-        try await services.store.insertAuditEvent(
-            did: completion.viewer.did,
-            scheduleRkey: nil,
-            action: "account_connected",
-            message: "Connected \(completion.viewer.handle ?? completion.viewer.did).",
-            now: now
-        )
-        try await services.store.createWebSession(
-            sessionID: session,
-            did: completion.viewer.did,
-            handle: completion.viewer.handle,
-            displayName: completion.viewer.displayName,
-            avatar: completion.viewer.avatar,
-            expiresAt: Timestamp.iso8601(Date().addingTimeInterval(60 * 60 * 24 * 30))
-        )
-        var headers = HTTPFields()
-        headers[.location] = "/app"
-        let secure = services.config.environment == .local || services.config.environment == .test ? "" : "; Secure"
-        headers[HTTPField.Name("Set-Cookie")!] =
-            "skej_session=\(session); Path=/; HttpOnly; SameSite=Lax; Max-Age=2592000\(secure)"
-        return Response(status: .found, headers: headers)
     }
 
     let v1 = router.group("v1")
@@ -108,6 +71,55 @@ public func buildRouter(services: SkejServices) -> Router<BasicRequestContext> {
     v1.get("me") { request, _ in
         let viewer = try await authenticate(request, services: services)
         return try jsonResponse(viewer)
+    }
+
+    v1.get("identity/resolve") { request, _ in
+        _ = try await authenticate(request, services: services)
+        let identifier = (request.uri.queryParameters.get("identifier") ?? "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !identifier.isEmpty else {
+            throw APIError(status: .badRequest, code: "missing_identifier", message: "Account handle or ID is required")
+        }
+        do {
+            let shouldStoreLocalIdentity = services.config.environment == .local || services.config.environment == .test
+            let identity = try await IdentityResolver(
+                allowsLocalIdentifiers: shouldStoreLocalIdentity
+            ).resolve(identifier)
+            if shouldStoreLocalIdentity {
+                try await services.store.upsertManagedAccount(
+                    ManagedAccount(
+                        did: identity.did,
+                        handle: identity.handle,
+                        displayName: identity.displayName,
+                        avatar: identity.avatar,
+                        pdsEndpoint: identity.pdsEndpoint,
+                        status: .active,
+                        isDefault: false
+                    ),
+                    now: Timestamp.iso8601()
+                )
+            }
+            return try jsonResponse(identity)
+        } catch {
+            throw APIError(status: .badRequest, code: "identity_not_found", message: "Skej could not find that account")
+        }
+    }
+
+    v1.get("invites/:token") { _, context in
+        let invite = try await publicInvite(token: try context.parameters.require("token"), services: services)
+        return try jsonResponse(invite)
+    }
+
+    v1.post("invites/:token/start-oauth") { _, context in
+        let invite = try await publicInvite(token: try context.parameters.require("token"), services: services)
+        let start = try await startOAuthFlow(
+            handle: invite.invitedHandle,
+            purpose: .inviteAccept,
+            inviteToken: invite.token,
+            returnTo: "/invite/\(invite.token)/success",
+            services: services
+        )
+        return try jsonResponse(StartInviteOAuthResponse(redirectURL: start.redirectURL))
     }
 
     v1.post("logout") { request, _ in
@@ -193,6 +205,81 @@ public func buildRouter(services: SkejServices) -> Router<BasicRequestContext> {
         let viewer = try await authenticate(request, services: services)
         let team = try await requireVisibleTeam(rkey: try context.parameters.require("teamRkey"), viewer: viewer, services: services)
         return try jsonResponse(ListMembersResponse(members: try await listTeamMembers(team: team, services: services)))
+    }
+
+    v1.get("teams/:teamRkey/invites") { request, context in
+        let viewer = try await authenticate(request, services: services)
+        let team = try await requireVisibleTeam(rkey: try context.parameters.require("teamRkey"), viewer: viewer, services: services)
+        if team.record.ownerAdminDid != viewer.did {
+            let member = try await activeMember(team: team, memberDid: viewer.did, services: services)
+            guard member?.record.role == .admin else {
+                return try jsonResponse(ListTeamInvitesResponse(invites: []))
+            }
+        }
+        return try jsonResponse(ListTeamInvitesResponse(
+            invites: try await services.store.listTeamInvites(ownerDid: teamOwnerDid(team.uri), teamRkey: team.rkey)
+        ))
+    }
+
+    v1.post("teams/:teamRkey/invites") { request, context in
+        let viewer = try await authenticate(request, services: services)
+        let team = try await requireTeamAdmin(rkey: try context.parameters.require("teamRkey"), viewer: viewer, services: services)
+        let body = try await decodeJSONBody(request, as: CreateTeamInviteRequest.self)
+        let handle = normalizedHandle(body.handle)
+        guard !handle.isEmpty else {
+            throw APIError(status: .badRequest, code: "missing_handle", message: "Account handle is required")
+        }
+        let identity = try await IdentityResolver(
+            allowsLocalIdentifiers: services.config.environment == .local || services.config.environment == .test
+        ).resolve(handle)
+        let now = Timestamp.iso8601()
+        let invite = TeamInvite(
+            id: UUID().uuidString,
+            token: randomToken(),
+            teamRkey: team.rkey,
+            teamUri: team.uri,
+            teamTitle: team.record.title,
+            ownerDid: teamOwnerDid(team.uri),
+            invitedHandle: identity.handle ?? handle,
+            invitedDid: identity.did,
+            role: body.role,
+            status: .pending,
+            inviterDid: viewer.did,
+            createdAt: now,
+            expiresAt: Timestamp.iso8601(Date().addingTimeInterval(60 * 60 * 24 * 7)),
+            updatedAt: now
+        )
+        try await services.store.createTeamInvite(invite)
+        try await services.store.insertAuditEvent(
+            did: teamOwnerDid(team.uri),
+            scheduleRkey: nil,
+            action: "team_invite_created",
+            message: "Invited \(invite.invitedHandle) to \(team.record.title).",
+            now: now
+        )
+        return try jsonResponse(invite, status: .created)
+    }
+
+    v1.post("teams/:teamRkey/invites/:inviteId/revoke") { request, context in
+        let viewer = try await authenticate(request, services: services)
+        let team = try await requireTeamAdmin(rkey: try context.parameters.require("teamRkey"), viewer: viewer, services: services)
+        let inviteId = try context.parameters.require("inviteId")
+        guard let invite = try await services.store.teamInvite(id: inviteId, ownerDid: teamOwnerDid(team.uri), teamRkey: team.rkey) else {
+            throw APIError(status: .notFound, code: "not_found", message: "Invite not found")
+        }
+        guard invite.status == .pending else {
+            throw APIError(status: .badRequest, code: "invite_not_pending", message: "Only pending invites can be revoked")
+        }
+        let now = Timestamp.iso8601()
+        try await services.store.updateTeamInviteStatus(id: invite.id, status: .revoked, acceptedDid: nil, now: now)
+        try await services.store.insertAuditEvent(
+            did: teamOwnerDid(team.uri),
+            scheduleRkey: nil,
+            action: "team_invite_revoked",
+            message: "Revoked invitation for \(invite.invitedHandle).",
+            now: now
+        )
+        return try jsonResponse(OKResponse(ok: true))
     }
 
     v1.post("teams/:teamRkey/members") { request, context in
@@ -743,6 +830,263 @@ private func seedDemoData(services: SkejServices) async throws {
     try await services.store.insertAuditEvent(did: appDid, scheduleRkey: nil, action: "demo_seeded", message: "Loaded demo brand schedule data.", now: nowString)
 }
 
+private func startOAuthFlow(
+    handle: String,
+    purpose: OAuthPurpose,
+    inviteToken: String?,
+    returnTo: String?,
+    services: SkejServices
+) async throws -> OAuthStartResult {
+    let state = randomToken()
+    let pkceVerifier = randomToken()
+    let nonce = randomToken()
+    let start = try await services.oauthClient.start(
+        handle: handle,
+        state: state,
+        pkceVerifier: pkceVerifier,
+        nonce: nonce
+    )
+    try await services.store.createOAuthState(
+        state: state,
+        handle: handle,
+        pkceVerifier: pkceVerifier,
+        nonce: nonce,
+        authServer: start.authServer,
+        tokenEndpoint: start.tokenEndpoint,
+        pdsEndpoint: start.pdsEndpoint,
+        dpopKeyJSON: start.dpopKeyJSON,
+        purpose: purpose,
+        inviteToken: inviteToken,
+        returnTo: sanitizedReturnPath(returnTo),
+        expiresAt: Timestamp.iso8601(Date().addingTimeInterval(600))
+    )
+    return start
+}
+
+private func finishOAuthCallback(
+    oauthState: OAuthStateRecord,
+    completion: OAuthCompletion,
+    request: Request,
+    services: SkejServices,
+    now: String
+) async throws -> Response {
+    switch oauthState.purpose {
+    case .signIn:
+        return try await finishSignInOAuth(
+            oauthState: oauthState,
+            completion: completion,
+            services: services,
+            now: now
+        )
+    case .inviteAccept:
+        return try await finishInviteAcceptOAuth(
+            oauthState: oauthState,
+            completion: completion,
+            services: services,
+            now: now
+        )
+    case .brandConnect:
+        return try await finishBrandConnectOAuth(
+            oauthState: oauthState,
+            completion: completion,
+            request: request,
+            services: services,
+            now: now
+        )
+    }
+}
+
+private func finishSignInOAuth(
+    oauthState: OAuthStateRecord,
+    completion: OAuthCompletion,
+    services: SkejServices,
+    now: String
+) async throws -> Response {
+    let session = randomToken()
+    try await storeOAuthAccount(oauthState: oauthState, completion: completion, services: services, now: now, isDefault: true)
+    try await services.store.insertAuditEvent(
+        did: completion.viewer.did,
+        scheduleRkey: nil,
+        action: "account_connected",
+        message: "Connected \(completion.viewer.handle ?? completion.viewer.did).",
+        now: now
+    )
+    try await services.store.createWebSession(
+        sessionID: session,
+        did: completion.viewer.did,
+        handle: completion.viewer.handle,
+        displayName: completion.viewer.displayName,
+        avatar: completion.viewer.avatar,
+        expiresAt: Timestamp.iso8601(Date().addingTimeInterval(60 * 60 * 24 * 30))
+    )
+    var headers = HTTPFields()
+    headers[.location] = sanitizedReturnPath(oauthState.returnTo) ?? "/app"
+    let secure = services.config.environment == .local || services.config.environment == .test ? "" : "; Secure"
+    headers[HTTPField.Name("Set-Cookie")!] =
+        "skej_session=\(session); Path=/; HttpOnly; SameSite=Lax; Max-Age=2592000\(secure)"
+    return Response(status: .found, headers: headers)
+}
+
+private func finishBrandConnectOAuth(
+    oauthState: OAuthStateRecord,
+    completion: OAuthCompletion,
+    request: Request,
+    services: SkejServices,
+    now: String
+) async throws -> Response {
+    try await storeOAuthAccount(oauthState: oauthState, completion: completion, services: services, now: now, isDefault: false)
+    let actor = try? await authenticate(request, services: services)
+    try await services.store.insertAuditEvent(
+        did: actor?.did ?? completion.viewer.did,
+        scheduleRkey: nil,
+        action: "brand_account_connected",
+        message: "Connected brand account \(completion.viewer.handle ?? completion.viewer.did).",
+        now: now
+    )
+    var headers = HTTPFields()
+    headers[.location] = sanitizedReturnPath(oauthState.returnTo) ?? "/app/account"
+    return Response(status: .found, headers: headers)
+}
+
+private func finishInviteAcceptOAuth(
+    oauthState: OAuthStateRecord,
+    completion: OAuthCompletion,
+    services: SkejServices,
+    now: String
+) async throws -> Response {
+    guard let inviteToken = oauthState.inviteToken else {
+        throw APIError(status: .badRequest, code: "invalid_invite", message: "Invite could not be found")
+    }
+    let invite = try await requirePendingInvite(token: inviteToken, services: services, now: now)
+    guard completion.viewer.did == invite.invitedDid ||
+          normalizedHandle(completion.viewer.handle ?? "") == normalizedHandle(invite.invitedHandle)
+    else {
+        throw APIError(status: .forbidden, code: "invite_account_mismatch", message: "Sign in with the invited account to accept this invitation")
+    }
+
+    try await storeOAuthAccount(oauthState: oauthState, completion: completion, services: services, now: now, isDefault: true)
+    let record = TeamMemberRecord(
+        teamUri: invite.teamUri,
+        memberDid: completion.viewer.did,
+        role: invite.role,
+        status: .active,
+        groupUris: [],
+        createdAt: now,
+        updatedAt: now
+    )
+    let memberRkey = completion.viewer.did.replacingOccurrences(of: ":", with: "_")
+    try await services.pdsClient.writeRecord(
+        did: invite.ownerDid,
+        collection: "at.skej.team.member",
+        rkey: memberRkey,
+        record: record
+    )
+    try await services.store.updateTeamInviteStatus(
+        id: invite.id,
+        status: .accepted,
+        acceptedDid: completion.viewer.did,
+        now: now
+    )
+    try await services.store.insertAuditEvent(
+        did: invite.ownerDid,
+        scheduleRkey: nil,
+        action: "team_invite_accepted",
+        message: "\(completion.viewer.handle ?? completion.viewer.did) joined \(invite.teamTitle).",
+        now: now
+    )
+    let session = randomToken()
+    try await services.store.createWebSession(
+        sessionID: session,
+        did: completion.viewer.did,
+        handle: completion.viewer.handle,
+        displayName: completion.viewer.displayName,
+        avatar: completion.viewer.avatar,
+        expiresAt: Timestamp.iso8601(Date().addingTimeInterval(60 * 60 * 24 * 30))
+    )
+
+    var headers = HTTPFields()
+    headers[.location] = sanitizedReturnPath(oauthState.returnTo) ?? "/invite/\(invite.token)/success"
+    let secure = services.config.environment == .local || services.config.environment == .test ? "" : "; Secure"
+    headers[HTTPField.Name("Set-Cookie")!] =
+        "skej_session=\(session); Path=/; HttpOnly; SameSite=Lax; Max-Age=2592000\(secure)"
+    return Response(status: .found, headers: headers)
+}
+
+private func storeOAuthAccount(
+    oauthState: OAuthStateRecord,
+    completion: OAuthCompletion,
+    services: SkejServices,
+    now: String,
+    isDefault: Bool
+) async throws {
+    try await services.store.createOAuthSession(completion.session, now: now)
+    try await services.store.upsertManagedAccount(
+        ManagedAccount(
+            did: completion.viewer.did,
+            handle: completion.viewer.handle,
+            displayName: completion.viewer.displayName,
+            avatar: completion.viewer.avatar,
+            pdsEndpoint: oauthState.pdsEndpoint,
+            status: .active,
+            isDefault: isDefault
+        ),
+        now: now
+    )
+}
+
+private func publicInvite(token: String, services: SkejServices) async throws -> TeamInvite {
+    guard let invite = try await services.store.teamInvite(token: token) else {
+        throw APIError(status: .notFound, code: "not_found", message: "Invite not found")
+    }
+    if invite.status == .pending,
+       let expires = Timestamp.date(from: invite.expiresAt),
+       expires <= Date()
+    {
+        let now = Timestamp.iso8601()
+        try await services.store.updateTeamInviteStatus(id: invite.id, status: .expired, acceptedDid: nil, now: now)
+        try await services.store.insertAuditEvent(
+            did: invite.ownerDid,
+            scheduleRkey: nil,
+            action: "team_invite_expired",
+            message: "Invitation for \(invite.invitedHandle) expired.",
+            now: now
+        )
+        var expired = invite
+        expired.status = .expired
+        expired.updatedAt = now
+        return expired
+    }
+    return invite
+}
+
+private func requirePendingInvite(token: String, services: SkejServices, now: String) async throws -> TeamInvite {
+    let invite = try await publicInvite(token: token, services: services)
+    guard invite.status == .pending else {
+        throw APIError(status: .badRequest, code: "invite_not_pending", message: "This invitation is no longer active")
+    }
+    guard let expires = Timestamp.date(from: invite.expiresAt),
+          expires > (Timestamp.date(from: now) ?? Date())
+    else {
+        throw APIError(status: .badRequest, code: "invite_expired", message: "This invitation has expired")
+    }
+    return invite
+}
+
+private func normalizedHandle(_ handle: String) -> String {
+    handle
+        .trimmingCharacters(in: .whitespacesAndNewlines)
+        .trimmingCharacters(in: CharacterSet(charactersIn: "@"))
+        .lowercased()
+}
+
+private func sanitizedReturnPath(_ value: String?) -> String? {
+    guard let value,
+          value.starts(with: "/"),
+          !value.starts(with: "//")
+    else { return nil }
+    return value
+}
+
 private func seedSchedule(
     did: String,
     rkey: String,
@@ -1075,14 +1419,19 @@ private func listBrands(team: TeamSummary, services: SkejServices) async throws 
     var brandDids = Set(grants.map(\.record.brandDid))
     brandDids.insert(team.record.ownerAdminDid)
     var brands: [BrandSummary] = []
-    for brandDid in brandDids {
+    for brandDid in brandDids.sorted() {
         let records = try await services.pdsClient.listRecords(did: brandDid, collection: "at.skej.brand", as: SkejBrandRecord.self)
         brands.append(contentsOf: records.compactMap { rkey, record in
             guard record.teamUri == team.uri else { return nil }
             return BrandSummary(rkey: rkey, uri: ATURI.record(did: brandDid, collection: "at.skej.brand", rkey: rkey), record: record)
         })
     }
-    return brands
+    return brands.sorted {
+        if $0.record.brandDid == $1.record.brandDid {
+            return $0.rkey < $1.rkey
+        }
+        return $0.record.brandDid < $1.record.brandDid
+    }
 }
 
 private func activeMember(team: TeamSummary, memberDid: String, services: SkejServices) async throws -> TeamMemberSummary? {

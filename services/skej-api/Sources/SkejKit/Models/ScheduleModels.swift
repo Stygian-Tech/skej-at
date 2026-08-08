@@ -528,6 +528,71 @@ public enum ManagedAccountStatus: String, Codable, Sendable {
     case disabled
 }
 
+public enum OAuthPurpose: String, Codable, Sendable {
+    case signIn = "sign_in"
+    case inviteAccept = "invite_accept"
+    case brandConnect = "brand_connect"
+}
+
+public enum TeamInviteStatus: String, Codable, Sendable {
+    case pending
+    case accepted
+    case revoked
+    case expired
+}
+
+public struct TeamInvite: Codable, Equatable, Sendable {
+    public let id: String
+    public var token: String
+    public var teamRkey: String
+    public var teamUri: String
+    public var teamTitle: String
+    public var ownerDid: String
+    public var invitedHandle: String
+    public var invitedDid: String
+    public var role: TeamRole
+    public var status: TeamInviteStatus
+    public var inviterDid: String
+    public var acceptedDid: String?
+    public var createdAt: String
+    public var expiresAt: String
+    public var updatedAt: String
+
+    public init(
+        id: String,
+        token: String,
+        teamRkey: String,
+        teamUri: String,
+        teamTitle: String,
+        ownerDid: String,
+        invitedHandle: String,
+        invitedDid: String,
+        role: TeamRole,
+        status: TeamInviteStatus,
+        inviterDid: String,
+        acceptedDid: String? = nil,
+        createdAt: String,
+        expiresAt: String,
+        updatedAt: String
+    ) {
+        self.id = id
+        self.token = token
+        self.teamRkey = teamRkey
+        self.teamUri = teamUri
+        self.teamTitle = teamTitle
+        self.ownerDid = ownerDid
+        self.invitedHandle = invitedHandle
+        self.invitedDid = invitedDid
+        self.role = role
+        self.status = status
+        self.inviterDid = inviterDid
+        self.acceptedDid = acceptedDid
+        self.createdAt = createdAt
+        self.expiresAt = expiresAt
+        self.updatedAt = updatedAt
+    }
+}
+
 public struct ScheduledJob: Codable, Equatable, Sendable {
     public let did: String
     public let rkey: String
@@ -751,6 +816,24 @@ public struct UpsertMemberRequest: Codable, Sendable {
     }
 }
 
+public struct CreateTeamInviteRequest: Codable, Sendable {
+    public let handle: String
+    public let role: TeamRole
+
+    public init(handle: String, role: TeamRole) {
+        self.handle = handle
+        self.role = role
+    }
+}
+
+public struct StartInviteOAuthResponse: Codable, Sendable {
+    public let redirectURL: String
+
+    public init(redirectURL: String) {
+        self.redirectURL = redirectURL
+    }
+}
+
 public struct UpsertGroupRequest: Codable, Sendable {
     public let name: String
     public let memberDids: [String]?
@@ -809,6 +892,10 @@ public struct ListTeamsResponse: Codable, Sendable {
 
 public struct ListMembersResponse: Codable, Sendable {
     public let members: [TeamMemberSummary]
+}
+
+public struct ListTeamInvitesResponse: Codable, Sendable {
+    public let invites: [TeamInvite]
 }
 
 public struct ListGroupsResponse: Codable, Sendable {

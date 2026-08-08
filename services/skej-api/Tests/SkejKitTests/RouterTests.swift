@@ -355,6 +355,149 @@ struct RouterTests {
             #expect(profile.description == "Business account")
         }
     }
+
+    @Test func designatedBrandWithOwnerGrantAppearsInTeamBrandList() async throws {
+        let services = try await makeTestServices()
+        let app = Application(router: buildRouter(services: services))
+
+        try await app.test(.router) { client in
+            let team = try await createTeam(client: client, ownerDid: "did:plc:owner")
+            let brand: BrandSummary = try await postJSON(
+                client: client,
+                uri: "/v1/teams/\(team.rkey)/brands",
+                headers: didHeaders("did:plc:owner"),
+                body: UpsertBrandRequest(brandDid: "did:plc:brand", status: .active)
+            )
+            #expect(brand.record.brandDid == "did:plc:brand")
+
+            let _: BrandGrantSummary = try await postJSON(
+                client: client,
+                uri: "/v1/teams/\(team.rkey)/brand-grants",
+                headers: didHeaders("did:plc:owner"),
+                body: UpsertBrandGrantRequest(
+                    brandDid: "did:plc:brand",
+                    granteeType: .member,
+                    grantee: "did:plc:owner",
+                    capabilities: [.create, .approve, .manage]
+                )
+            )
+
+            let brands: ListBrandsResponse = try await getJSON(
+                client: client,
+                uri: "/v1/teams/\(team.rkey)/brands",
+                headers: didHeaders("did:plc:owner")
+            )
+            #expect(brands.brands.contains { $0.record.brandDid == "did:plc:brand" })
+        }
+    }
+
+    @Test func adminCanInviteAndUserAcceptsWithMatchingOAuthAccount() async throws {
+        let services = try await makeTestServices()
+        let app = Application(router: buildRouter(services: services))
+
+        try await app.test(.router) { client in
+            let team = try await createTeam(client: client, ownerDid: "did:plc:owner")
+            let invite: TeamInvite = try await postJSON(
+                client: client,
+                uri: "/v1/teams/\(team.rkey)/invites",
+                headers: didHeaders("did:plc:owner"),
+                body: CreateTeamInviteRequest(handle: "alex.skej.at", role: .user)
+            )
+            #expect(invite.status == .pending)
+            #expect(invite.invitedHandle == "alex.skej.at")
+
+            try await client.execute(uri: "/v1/invites/\(invite.token)", method: .get) { response in
+                #expect(response.status == .ok)
+                #expect(String(buffer: response.body).contains("Launch Team"))
+            }
+
+            var redirect = ""
+            try await client.execute(uri: "/v1/invites/\(invite.token)/start-oauth", method: .post) { response in
+                #expect(response.status == .ok)
+                let body = try JSONDecoder().decode(StartInviteOAuthResponse.self, from: Data(String(buffer: response.body).utf8))
+                redirect = body.redirectURL
+            }
+
+            try await client.execute(uri: redirect, method: .get) { response in
+                #expect(response.status == .found)
+                #expect(response.headers[.location] == "/invite/\(invite.token)/success")
+                #expect((response.headers[HTTPField.Name("Set-Cookie")!] ?? "").contains("skej_session="))
+            }
+
+            let members: ListMembersResponse = try await getJSON(
+                client: client,
+                uri: "/v1/teams/\(team.rkey)/members",
+                headers: didHeaders("did:plc:owner")
+            )
+            #expect(members.members.count == 1)
+            #expect(members.members.first?.record.role == .user)
+            #expect(members.members.first?.record.memberDid.starts(with: "did:plc:") == true)
+
+            let invites: ListTeamInvitesResponse = try await getJSON(
+                client: client,
+                uri: "/v1/teams/\(team.rkey)/invites",
+                headers: didHeaders("did:plc:owner")
+            )
+            #expect(invites.invites.first?.status == .accepted)
+        }
+    }
+
+    @Test func inviteAcceptanceRejectsMismatchedOAuthAccount() async throws {
+        let services = try await makeTestServices()
+        let app = Application(router: buildRouter(services: services))
+
+        try await app.test(.router) { client in
+            let team = try await createTeam(client: client, ownerDid: "did:plc:owner")
+            let invite: TeamInvite = try await postJSON(
+                client: client,
+                uri: "/v1/teams/\(team.rkey)/invites",
+                headers: didHeaders("did:plc:owner"),
+                body: CreateTeamInviteRequest(handle: "alex.skej.at", role: .user)
+            )
+            try await services.store.createOAuthState(
+                state: "mismatch-state",
+                handle: "maya.skej.at",
+                pkceVerifier: "verifier",
+                nonce: "nonce",
+                authServer: "local",
+                tokenEndpoint: "local",
+                pdsEndpoint: "local",
+                dpopKeyJSON: "{}",
+                purpose: .inviteAccept,
+                inviteToken: invite.token,
+                returnTo: "/invite/\(invite.token)/success",
+                expiresAt: Timestamp.iso8601(Date().addingTimeInterval(600))
+            )
+
+            try await client.execute(uri: "/oauth/callback?state=mismatch-state&code=local-dev", method: .get) { response in
+                #expect(response.status == .forbidden)
+                #expect(String(buffer: response.body).contains("invited account"))
+            }
+        }
+    }
+
+    @Test func brandConnectOAuthDoesNotReplaceActorSession() async throws {
+        let services = try await makeTestServices()
+        let app = Application(router: buildRouter(services: services))
+
+        try await app.test(.router) { client in
+            var redirect = ""
+            try await client.execute(
+                uri: "/oauth/start?handle=studio.skej.at&purpose=brand_connect&returnTo=/app/account",
+                method: .get,
+                headers: didHeaders("did:plc:owner")
+            ) { response in
+                #expect(response.status == .found)
+                redirect = response.headers[.location] ?? ""
+            }
+
+            try await client.execute(uri: redirect, method: .get, headers: didHeaders("did:plc:owner")) { response in
+                #expect(response.status == .found)
+                #expect(response.headers[.location] == "/app/account")
+                #expect(response.headers[HTTPField.Name("Set-Cookie")!] == nil)
+            }
+        }
+    }
 }
 
 private struct OAuthMetadataResponse: Decodable {
@@ -394,6 +537,22 @@ private func patchJSON<RequestBody: Encodable, ResponseBody: Decodable>(
     body: RequestBody
 ) async throws -> ResponseBody {
     try await executeJSON(client: client, uri: uri, method: .patch, headers: headers, body: body)
+}
+
+private func getJSON<ResponseBody: Decodable>(
+    client: some TestClientProtocol,
+    uri: String,
+    headers: HTTPFields
+) async throws -> ResponseBody {
+    var decoded: ResponseBody?
+    try await client.execute(uri: uri, method: .get, headers: headers) { response in
+        #expect(response.status == .ok)
+        decoded = try JSONDecoder().decode(ResponseBody.self, from: Data(String(buffer: response.body).utf8))
+    }
+    guard let decoded else {
+        throw CancellationError()
+    }
+    return decoded
 }
 
 private func executeJSON<RequestBody: Encodable, ResponseBody: Decodable>(

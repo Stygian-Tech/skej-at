@@ -181,6 +181,7 @@ export type TeamRole = "admin" | "user";
 export type MembershipStatus = "active" | "disabled";
 export type BrandCapability = "create" | "approve" | "manage";
 export type GrantGranteeType = "member" | "group";
+export type TeamInviteStatus = "pending" | "accepted" | "revoked" | "expired";
 
 export interface SkejTeamRecord {
   $type: "at.skej.team";
@@ -245,6 +246,24 @@ export interface TeamMemberSummary {
   record: TeamMemberRecord;
 }
 
+export interface TeamInvite {
+  id: string;
+  token: string;
+  teamRkey: string;
+  teamUri: string;
+  teamTitle: string;
+  ownerDid: string;
+  invitedHandle: string;
+  invitedDid: string;
+  role: TeamRole;
+  status: TeamInviteStatus;
+  inviterDid: string;
+  acceptedDid?: string;
+  createdAt: string;
+  expiresAt: string;
+  updatedAt: string;
+}
+
 export interface TeamGroupSummary {
   rkey: string;
   uri: string;
@@ -283,6 +302,15 @@ export interface AuditEvent {
   action: string;
   message: string;
   createdAt: string;
+}
+
+export interface ResolvedIdentity {
+  identifier: string;
+  did: string;
+  pdsEndpoint: string;
+  handle?: string;
+  displayName?: string;
+  avatar?: string;
 }
 
 export interface Viewer {

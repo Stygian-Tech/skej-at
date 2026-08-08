@@ -40,6 +40,9 @@ public actor SQLiteStore {
                 token_endpoint TEXT,
                 pds_endpoint TEXT,
                 dpop_key_json TEXT,
+                purpose TEXT NOT NULL DEFAULT 'sign_in',
+                invite_token TEXT,
+                return_to TEXT,
                 expires_at TEXT NOT NULL
             );
             CREATE TABLE IF NOT EXISTS oauth_sessions (
@@ -112,12 +115,34 @@ public actor SQLiteStore {
                 message TEXT NOT NULL,
                 created_at TEXT NOT NULL
             );
+            CREATE TABLE IF NOT EXISTS team_invites (
+                id TEXT PRIMARY KEY,
+                token TEXT NOT NULL UNIQUE,
+                team_rkey TEXT NOT NULL,
+                team_uri TEXT NOT NULL,
+                team_title TEXT NOT NULL,
+                owner_did TEXT NOT NULL,
+                invited_handle TEXT NOT NULL,
+                invited_did TEXT NOT NULL,
+                role TEXT NOT NULL,
+                status TEXT NOT NULL,
+                inviter_did TEXT NOT NULL,
+                accepted_did TEXT,
+                created_at TEXT NOT NULL,
+                expires_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS team_invites_team_idx
+                ON team_invites (owner_did, team_rkey, status, created_at);
             """
         )
         try addColumnIfMissing(table: "oauth_states", column: "auth_server", definition: "TEXT")
         try addColumnIfMissing(table: "oauth_states", column: "token_endpoint", definition: "TEXT")
         try addColumnIfMissing(table: "oauth_states", column: "pds_endpoint", definition: "TEXT")
         try addColumnIfMissing(table: "oauth_states", column: "dpop_key_json", definition: "TEXT")
+        try addColumnIfMissing(table: "oauth_states", column: "purpose", definition: "TEXT NOT NULL DEFAULT 'sign_in'")
+        try addColumnIfMissing(table: "oauth_states", column: "invite_token", definition: "TEXT")
+        try addColumnIfMissing(table: "oauth_states", column: "return_to", definition: "TEXT")
         try addColumnIfMissing(table: "web_sessions", column: "display_name", definition: "TEXT")
         try addColumnIfMissing(table: "web_sessions", column: "avatar", definition: "TEXT")
         try addColumnIfMissing(table: "scheduled_jobs", column: "scheduled_at", definition: "TEXT")
@@ -138,22 +163,32 @@ public actor SQLiteStore {
         tokenEndpoint: String? = nil,
         pdsEndpoint: String? = nil,
         dpopKeyJSON: String? = nil,
+        purpose: OAuthPurpose = .signIn,
+        inviteToken: String? = nil,
+        returnTo: String? = nil,
         expiresAt: String
     ) throws {
         try run(
             """
             INSERT OR REPLACE INTO oauth_states
-                (state, handle, pkce_verifier, nonce, auth_server, token_endpoint, pds_endpoint, dpop_key_json, expires_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                (
+                    state, handle, pkce_verifier, nonce, auth_server, token_endpoint,
+                    pds_endpoint, dpop_key_json, purpose, invite_token, return_to, expires_at
+                )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
-            [state, handle, pkceVerifier, nonce, authServer, tokenEndpoint, pdsEndpoint, dpopKeyJSON, expiresAt]
+            [
+                state, handle, pkceVerifier, nonce, authServer, tokenEndpoint, pdsEndpoint,
+                dpopKeyJSON, purpose.rawValue, inviteToken, returnTo, expiresAt,
+            ]
         )
     }
 
     public func consumeOAuthState(state: String, now: String) throws -> OAuthStateRecord? {
         let rows = try query(
             """
-            SELECT state, handle, pkce_verifier, nonce, auth_server, token_endpoint, pds_endpoint, dpop_key_json, expires_at
+            SELECT state, handle, pkce_verifier, nonce, auth_server, token_endpoint, pds_endpoint,
+                   dpop_key_json, purpose, invite_token, return_to, expires_at
             FROM oauth_states
             WHERE state = ? AND expires_at > ?
             LIMIT 1
@@ -177,6 +212,9 @@ public actor SQLiteStore {
             tokenEndpoint: row["token_endpoint"],
             pdsEndpoint: row["pds_endpoint"],
             dpopKeyJSON: row["dpop_key_json"],
+            purpose: OAuthPurpose(rawValue: row["purpose"] ?? "") ?? .signIn,
+            inviteToken: row["invite_token"],
+            returnTo: row["return_to"],
             expiresAt: expiresAt
         )
     }
@@ -698,6 +736,95 @@ public actor SQLiteStore {
         ).compactMap(auditEvent(from:))
     }
 
+    public func createTeamInvite(_ invite: TeamInvite) throws {
+        try run(
+            """
+            INSERT INTO team_invites
+                (
+                    id, token, team_rkey, team_uri, team_title, owner_did,
+                    invited_handle, invited_did, role, status, inviter_did,
+                    accepted_did, created_at, expires_at, updated_at
+                )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            [
+                invite.id,
+                invite.token,
+                invite.teamRkey,
+                invite.teamUri,
+                invite.teamTitle,
+                invite.ownerDid,
+                invite.invitedHandle,
+                invite.invitedDid,
+                invite.role.rawValue,
+                invite.status.rawValue,
+                invite.inviterDid,
+                invite.acceptedDid,
+                invite.createdAt,
+                invite.expiresAt,
+                invite.updatedAt,
+            ]
+        )
+    }
+
+    public func listTeamInvites(ownerDid: String, teamRkey: String) throws -> [TeamInvite] {
+        try query(
+            """
+            SELECT id, token, team_rkey, team_uri, team_title, owner_did, invited_handle,
+                   invited_did, role, status, inviter_did, accepted_did, created_at,
+                   expires_at, updated_at
+            FROM team_invites
+            WHERE owner_did = ? AND team_rkey = ?
+            ORDER BY created_at DESC
+            """,
+            [ownerDid, teamRkey]
+        ).compactMap(teamInvite(from:))
+    }
+
+    public func teamInvite(token: String) throws -> TeamInvite? {
+        try query(
+            """
+            SELECT id, token, team_rkey, team_uri, team_title, owner_did, invited_handle,
+                   invited_did, role, status, inviter_did, accepted_did, created_at,
+                   expires_at, updated_at
+            FROM team_invites
+            WHERE token = ?
+            LIMIT 1
+            """,
+            [token]
+        ).first.flatMap(teamInvite(from:))
+    }
+
+    public func teamInvite(id: String, ownerDid: String, teamRkey: String) throws -> TeamInvite? {
+        try query(
+            """
+            SELECT id, token, team_rkey, team_uri, team_title, owner_did, invited_handle,
+                   invited_did, role, status, inviter_did, accepted_did, created_at,
+                   expires_at, updated_at
+            FROM team_invites
+            WHERE id = ? AND owner_did = ? AND team_rkey = ?
+            LIMIT 1
+            """,
+            [id, ownerDid, teamRkey]
+        ).first.flatMap(teamInvite(from:))
+    }
+
+    public func updateTeamInviteStatus(
+        id: String,
+        status: TeamInviteStatus,
+        acceptedDid: String?,
+        now: String
+    ) throws {
+        try run(
+            """
+            UPDATE team_invites
+            SET status = ?, accepted_did = COALESCE(?, accepted_did), updated_at = ?
+            WHERE id = ?
+            """,
+            [status.rawValue, acceptedDid, now, id]
+        )
+    }
+
     public func findPublishedSchedule(scheduleUri: String) throws -> (did: String, rkey: String, record: SkejScheduleRecord)? {
         guard let parsed = parseScheduleURI(scheduleUri) else { return nil }
         guard let record = try scheduleRecord(did: parsed.did, rkey: parsed.rkey),
@@ -777,6 +904,41 @@ public actor SQLiteStore {
             action: action,
             message: message,
             createdAt: createdAt
+        )
+    }
+
+    private func teamInvite(from row: [String: String]) -> TeamInvite? {
+        guard let id = row["id"],
+              let token = row["token"],
+              let teamRkey = row["team_rkey"],
+              let teamUri = row["team_uri"],
+              let teamTitle = row["team_title"],
+              let ownerDid = row["owner_did"],
+              let invitedHandle = row["invited_handle"],
+              let invitedDid = row["invited_did"],
+              let role = row["role"].flatMap(TeamRole.init(rawValue:)),
+              let status = row["status"].flatMap(TeamInviteStatus.init(rawValue:)),
+              let inviterDid = row["inviter_did"],
+              let createdAt = row["created_at"],
+              let expiresAt = row["expires_at"],
+              let updatedAt = row["updated_at"]
+        else { return nil }
+        return TeamInvite(
+            id: id,
+            token: token,
+            teamRkey: teamRkey,
+            teamUri: teamUri,
+            teamTitle: teamTitle,
+            ownerDid: ownerDid,
+            invitedHandle: invitedHandle,
+            invitedDid: invitedDid,
+            role: role,
+            status: status,
+            inviterDid: inviterDid,
+            acceptedDid: row["accepted_did"],
+            createdAt: createdAt,
+            expiresAt: expiresAt,
+            updatedAt: updatedAt
         )
     }
 
@@ -916,6 +1078,9 @@ public struct OAuthStateRecord: Equatable, Sendable {
     public let tokenEndpoint: String?
     public let pdsEndpoint: String?
     public let dpopKeyJSON: String?
+    public let purpose: OAuthPurpose
+    public let inviteToken: String?
+    public let returnTo: String?
     public let expiresAt: String
 }
 

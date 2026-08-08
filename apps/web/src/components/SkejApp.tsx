@@ -61,6 +61,7 @@ import {
   localDatetimeValue,
   validateComposerDraft,
 } from "@/lib/editor";
+import { showProtocolDetails } from "@/lib/environment";
 import { cn } from "@/lib/utils";
 import {
   CommunityCalendarEventRecord,
@@ -323,6 +324,7 @@ export function SkejApp() {
   const [actionError, setActionError] = React.useState<string | null>(null);
   const [actionMessage, setActionMessage] = React.useState<string | null>(null);
   const [profileOpen, setProfileOpen] = React.useState(false);
+  const canShowProtocolDetails = showProtocolDetails();
 
   const issues = React.useMemo(() => validateComposerDraft(draft), [draft]);
   const firstPostCount = countGraphemes(draft.posts[0]?.text ?? "");
@@ -691,7 +693,7 @@ export function SkejApp() {
   return (
     <main className="min-h-dvh overflow-hidden px-4 pb-28 pt-[1.125rem] text-foreground sm:px-6 lg:px-8 lg:pb-4">
       <div className="mx-auto flex w-full max-w-7xl flex-col gap-[1.125rem]">
-        <header className="sticky top-0 z-40 flex items-center justify-between gap-3 rounded-[2rem] border border-border bg-card/95 px-4 py-3 shadow-[0_14px_38px_rgba(35,31,32,0.08)] backdrop-blur">
+        <header className="flex items-center justify-between gap-3 rounded-[2rem] border border-border bg-card/95 px-4 py-3 shadow-[0_14px_38px_rgba(35,31,32,0.08)] backdrop-blur">
             <Link className="flex min-w-0 items-center gap-3" href="/">
               <SkejLogoMark />
               <div className="flex min-w-0 flex-col">
@@ -781,7 +783,7 @@ export function SkejApp() {
             </div>
         </header>
 
-        <div className="sticky top-[5.75rem] z-30 flex items-center gap-2 rounded-[1.25rem] border border-accent/70 bg-accent px-3 py-2 text-xs font-black text-accent-foreground shadow-[0_10px_28px_rgba(216,188,83,0.18)]">
+        <div className="flex items-center gap-2 rounded-[1.25rem] border border-accent/70 bg-accent px-3 py-2 text-xs font-black text-accent-foreground shadow-[0_10px_28px_rgba(216,188,83,0.18)]">
           <span>Work in progress. Keep a copy of mission-critical content.</span>
         </div>
 
@@ -1223,7 +1225,7 @@ export function SkejApp() {
             ) : null}
           </div>
 
-          <nav className="sticky bottom-[max(0.5rem,env(safe-area-inset-bottom))] z-10 rounded-full border border-border bg-card/95 p-1.5 shadow-[0_12px_30px_rgba(35,31,32,0.12)] backdrop-blur lg:hidden">
+          <nav className="rounded-full border border-border bg-card/95 p-1.5 shadow-[0_12px_30px_rgba(35,31,32,0.12)] backdrop-blur lg:hidden">
             <div className="grid grid-cols-3 gap-2">
               <Button
                 variant="default"
@@ -1448,15 +1450,17 @@ export function SkejApp() {
                         Publish
                       </Button>
                     </div>
-                    <details className="rounded-2xl bg-card/70 p-3 text-xs font-semibold text-muted-foreground">
-                      <summary className="cursor-pointer font-black text-foreground">
-                        Advanced
-                      </summary>
-                      <div className="mt-2 grid gap-1 break-all">
-                        <span>Schedule: {selected.scheduleUri}</span>
-                        <span>Published: {selected.publishedUri ?? "Not published"}</span>
-                      </div>
-                    </details>
+                    {canShowProtocolDetails ? (
+                      <details className="rounded-2xl bg-card/70 p-3 text-xs font-semibold text-muted-foreground">
+                        <summary className="cursor-pointer font-black text-foreground">
+                          Advanced
+                        </summary>
+                        <div className="mt-2 grid gap-1 break-all">
+                          <span>Schedule: {selected.scheduleUri}</span>
+                          <span>Published: {selected.publishedUri ?? "Not published"}</span>
+                        </div>
+                      </details>
+                    ) : null}
                   </div>
                 ) : null}
               </CardContent>
@@ -1507,9 +1511,11 @@ export function SkejApp() {
                 </p>
               </div>
               <div className="flex items-center gap-2">
-                <Badge variant="sunny">
-                  community.lexicon.calendar.event
-                </Badge>
+                {canShowProtocolDetails ? (
+                  <Badge variant="sunny">
+                    community.lexicon.calendar.event
+                  </Badge>
+                ) : null}
                 <Button
                   variant="ghost"
                   size="icon"
@@ -1527,7 +1533,7 @@ export function SkejApp() {
                   <div>
                     <h3 className="text-lg font-black">Calendar</h3>
                     <p className="text-sm font-semibold text-muted-foreground">
-                      {calendarEvents.length} scheduled calendar records across 18 months.
+                      {calendarEvents.length} scheduled posts across 18 months.
                     </p>
                   </div>
                   <Button variant="outline" size="sm" onClick={refreshSchedules}>
@@ -1606,12 +1612,12 @@ export function SkejApp() {
                 <div>
                   <h3 className="text-lg font-black">Day Agenda</h3>
                   <p className="text-sm font-semibold text-muted-foreground">
-                    ATmosphere-ready calendar records for scheduled content.
+                    Scheduled posts for the selected day.
                   </p>
                 </div>
                 {selectedCalendarEvents.length === 0 ? (
                   <div className="rounded-xl bg-muted px-3 py-3 text-sm font-semibold text-muted-foreground">
-                    Pick a scheduled day to inspect its records.
+                    Pick a scheduled day to inspect its posts.
                   </div>
                 ) : (
                   selectedCalendarEvents.map((event) => {
@@ -1651,12 +1657,14 @@ export function SkejApp() {
                               </div>
                             ) : null}
                             <div className="grid grid-cols-2 gap-2 text-xs font-bold text-muted-foreground">
-                              <div className="rounded-xl bg-muted px-3 py-2">
-                                Type
-                                <span className="block truncate text-foreground">
-                                  {event.content?.recordType}
-                                </span>
-                              </div>
+                              {canShowProtocolDetails ? (
+                                <div className="rounded-xl bg-muted px-3 py-2">
+                                  Type
+                                  <span className="block truncate text-foreground">
+                                    {event.content?.recordType}
+                                  </span>
+                                </div>
+                              ) : null}
                               <div className="rounded-xl bg-muted px-3 py-2">
                                 Timezone
                                 <span className="block truncate text-foreground">
@@ -1664,20 +1672,24 @@ export function SkejApp() {
                                 </span>
                               </div>
                             </div>
-                            <div className="rounded-xl bg-muted px-3 py-2 text-xs font-bold text-muted-foreground">
-                              Source Schedule
-                              <span className="block break-all text-foreground">
-                                {event.source.uri}
-                              </span>
-                            </div>
-                            <details className="rounded-xl bg-muted px-3 py-2 text-xs font-semibold text-muted-foreground">
-                              <summary className="cursor-pointer font-black text-foreground">
-                                Calendar Record
-                              </summary>
-                              <pre className="mt-2 max-h-48 overflow-auto whitespace-pre-wrap break-words rounded-lg bg-background/70 p-2 text-[11px]">
-                                {JSON.stringify(event, null, 2)}
-                              </pre>
-                            </details>
+                            {canShowProtocolDetails ? (
+                              <>
+                                <div className="rounded-xl bg-muted px-3 py-2 text-xs font-bold text-muted-foreground">
+                                  Source Schedule
+                                  <span className="block break-all text-foreground">
+                                    {event.source.uri}
+                                  </span>
+                                </div>
+                                <details className="rounded-xl bg-muted px-3 py-2 text-xs font-semibold text-muted-foreground">
+                                  <summary className="cursor-pointer font-black text-foreground">
+                                    Calendar Record
+                                  </summary>
+                                  <pre className="mt-2 max-h-48 overflow-auto whitespace-pre-wrap break-words rounded-lg bg-background/70 p-2 text-[11px]">
+                                    {JSON.stringify(event, null, 2)}
+                                  </pre>
+                                </details>
+                              </>
+                            ) : null}
                           </div>
                         ) : null}
                       </article>

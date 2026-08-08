@@ -7,9 +7,11 @@ import {
   BrandSummary,
   GrantGranteeType,
   ManagedAccount,
+  ResolvedIdentity,
   ScheduleStatus,
   ScheduledPostSummary,
   TeamGroupSummary,
+  TeamInvite,
   TeamMemberSummary,
   TeamRole,
   TeamSummary,
@@ -48,6 +50,14 @@ export function startOAuth(handle: string): string {
   return `/oauth/start?${params.toString()}`;
 }
 
+export function startBrandOAuth(handle: string): string {
+  const params = new URLSearchParams();
+  params.set("handle", handle.trim());
+  params.set("purpose", "brand_connect");
+  params.set("returnTo", "/app/account");
+  return `/oauth/start?${params.toString()}`;
+}
+
 export async function getViewer(): Promise<Viewer> {
   return requestJSON<Viewer>("/v1/me");
 }
@@ -66,6 +76,12 @@ export async function listSchedules(): Promise<ScheduledPostSummary[]> {
 export async function listAccounts(): Promise<ManagedAccount[]> {
   const body = await requestJSON<{ accounts: ManagedAccount[] }>("/v1/accounts");
   return body.accounts;
+}
+
+export async function resolveIdentity(identifier: string): Promise<ResolvedIdentity> {
+  const params = new URLSearchParams();
+  params.set("identifier", identifier.trim());
+  return requestJSON<ResolvedIdentity>(`/v1/identity/resolve?${params.toString()}`);
 }
 
 export async function listTeams(): Promise<TeamSummary[]> {
@@ -87,6 +103,46 @@ export async function listTeamMembers(teamRkey: string): Promise<TeamMemberSumma
   return body.members;
 }
 
+export async function listTeamInvites(teamRkey: string): Promise<TeamInvite[]> {
+  const body = await requestJSON<{ invites: TeamInvite[] }>(
+    `/v1/teams/${encodeURIComponent(teamRkey)}/invites`
+  );
+  return body.invites;
+}
+
+export async function createTeamInvite(
+  teamRkey: string,
+  handle: string,
+  role: TeamRole
+): Promise<TeamInvite> {
+  return requestJSON<TeamInvite>(`/v1/teams/${encodeURIComponent(teamRkey)}/invites`, {
+    method: "POST",
+    body: JSON.stringify({ handle, role }),
+  });
+}
+
+export async function revokeTeamInvite(
+  teamRkey: string,
+  inviteId: string
+): Promise<void> {
+  await requestJSON<{ ok: boolean }>(
+    `/v1/teams/${encodeURIComponent(teamRkey)}/invites/${encodeURIComponent(inviteId)}/revoke`,
+    { method: "POST" }
+  );
+}
+
+export async function getInvite(token: string): Promise<TeamInvite> {
+  return requestJSON<TeamInvite>(`/v1/invites/${encodeURIComponent(token)}`);
+}
+
+export async function startInviteOAuth(token: string): Promise<string> {
+  const body = await requestJSON<{ redirectURL: string }>(
+    `/v1/invites/${encodeURIComponent(token)}/start-oauth`,
+    { method: "POST" }
+  );
+  return body.redirectURL;
+}
+
 export async function addTeamMember(
   teamRkey: string,
   memberDid: string,
@@ -97,6 +153,21 @@ export async function addTeamMember(
     {
       method: "POST",
       body: JSON.stringify({ memberDid, role, status: "active", groupUris: [] }),
+    }
+  );
+}
+
+export async function updateTeamMember(
+  teamRkey: string,
+  memberDid: string,
+  role: TeamRole,
+  groupUris: string[]
+): Promise<TeamMemberSummary> {
+  return requestJSON<TeamMemberSummary>(
+    `/v1/teams/${encodeURIComponent(teamRkey)}/members/${didPath(memberDid)}`,
+    {
+      method: "PATCH",
+      body: JSON.stringify({ memberDid, role, status: "active", groupUris }),
     }
   );
 }
@@ -142,6 +213,25 @@ export async function createBrandGrant(
     `/v1/teams/${encodeURIComponent(teamRkey)}/brand-grants`,
     {
       method: "POST",
+      body: JSON.stringify(grant),
+    }
+  );
+}
+
+export async function updateBrandGrant(
+  teamRkey: string,
+  grantRkey: string,
+  grant: {
+    brandDid: string;
+    granteeType: GrantGranteeType;
+    grantee: string;
+    capabilities: BrandCapability[];
+  }
+): Promise<BrandGrantSummary> {
+  return requestJSON<BrandGrantSummary>(
+    `/v1/teams/${encodeURIComponent(teamRkey)}/brand-grants/${encodeURIComponent(grantRkey)}`,
+    {
+      method: "PATCH",
       body: JSON.stringify(grant),
     }
   );
