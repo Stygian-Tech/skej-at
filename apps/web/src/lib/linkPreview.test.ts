@@ -21,6 +21,15 @@ describe("automatic link preview state", () => {
     ]);
   });
 
+  test("uses a Markdown link destination from the compiled projection", () => {
+    expect(
+      automaticLinkPreviewURL({
+        source: { format: "markdown", text: "Read [Skej](https://skej.at)" },
+        text: "stale",
+      })
+    ).toBe("https://skej.at");
+  });
+
   test("does not replace image or quote embeds", () => {
     expect(
       automaticLinkPreviewURL({

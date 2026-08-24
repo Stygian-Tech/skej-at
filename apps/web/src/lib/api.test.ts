@@ -24,7 +24,15 @@ describe("api client", () => {
     const fetchMock = mock(async (input: RequestInfo | URL, init?: RequestInit) => {
       expect(String(input)).toBe("/xrpc/at.skej.schedule.create");
       expect(init?.method).toBe("POST");
-      expect(JSON.parse(String(init?.body)).record.$type).toBe("at.skej.schedule");
+      const record = JSON.parse(String(init?.body)).record;
+      expect(record.$type).toBe("at.skej.schedule");
+      expect(record.posts[0].source).toEqual({
+        format: "markdown",
+        text: "Schedule **this** [link](https://example.com)",
+      });
+      expect(record.posts[0].text).toBe("Schedule this link");
+      expect(record.posts[0].facets[0].features[0].uri).toBe("https://example.com");
+      expect(record.posts[0].publishRkey).toMatch(/^[234567abcdefghij][234567abcdefghijklmnopqrstuvwxyz]{12}$/);
       return new Response(
         JSON.stringify({
           rkey: "3l6test",
@@ -42,7 +50,15 @@ describe("api client", () => {
     const result = await createSchedule({
       mode: "post",
       scheduledFor: "2099-01-01T11:00",
-      posts: [{ text: "scheduled" }],
+      posts: [
+        {
+          source: {
+            format: "markdown",
+            text: "Schedule **this** [link](https://example.com)",
+          },
+          text: "stale",
+        },
+      ],
     });
 
     expect(result.rkey).toBe("3l6test");
