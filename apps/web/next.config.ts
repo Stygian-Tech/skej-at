@@ -30,8 +30,8 @@ const nextConfig: NextConfig = {
         destination: `${apiBase}/oauth/:path*`,
       },
       {
-        source: "/v1/:path*",
-        destination: `${apiBase}/v1/:path*`,
+        source: "/xrpc/:path*",
+        destination: `${apiBase}/xrpc/:path*`,
       },
     ];
   },

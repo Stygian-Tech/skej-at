@@ -4,6 +4,7 @@ import {
   SKEJ_SCHEDULE_COLLECTION,
   SkejScheduleRecord,
 } from "@/lib/skejTypes";
+import { projectMarkdownPost } from "@/lib/socialMarkdown";
 
 export const MAX_POST_GRAPHEMES = 300;
 export const MAX_SCHEDULE_TITLE_GRAPHEMES = 120;
@@ -70,14 +71,24 @@ export function firstHTTPURL(text: string): string | undefined {
 }
 
 export function normalizePost(plan: PostPlan): PostPlan {
-  const text = plan.text.trim();
+  const projected = projectMarkdownPost(plan);
   return {
-    ...plan,
-    text,
+    ...projected,
+    text: plan.source?.format === "markdown" ? projected.text : projected.text.trim(),
     langs: plan.langs?.map((lang) => lang.trim()).filter(Boolean),
     labels: plan.labels?.map((label) => label.trim()).filter(Boolean),
     tags: plan.tags?.map((tag) => tag.trim()).filter(Boolean),
   };
+}
+
+export function firstPostLinkURL(plan: PostPlan): string | undefined {
+  const projected = projectMarkdownPost(plan);
+  for (const facet of projected.facets ?? []) {
+    for (const feature of facet.features) {
+      if (feature.$type === "app.bsky.richtext.facet#link") return feature.uri;
+    }
+  }
+  return firstHTTPURL(projected.text);
 }
 
 export function validateComposerDraft(draft: ComposerDraft, now = new Date()): ValidationIssue[] {
@@ -97,7 +108,7 @@ export function validateComposerDraft(draft: ComposerDraft, now = new Date()): V
   }
 
   posts.forEach((post, index) => {
-    if (!post.text) {
+    if (!post.text.trim()) {
       issues.push({
         field: `posts.${index}.text`,
         message: "Post text is required.",
@@ -160,7 +171,10 @@ export function buildScheduleRecord(
   }
 
   const posts = draft.posts.map((post) => {
-    const normalized = normalizePost(post);
+    const normalized = {
+      ...normalizePost(post),
+      publishRkey: post.publishRkey ?? generateTID(now),
+    };
     if (draft.contentWarning?.trim()) {
       return {
         ...normalized,
@@ -174,6 +188,7 @@ export function buildScheduleRecord(
 
   const timestamp = now.toISOString();
   const scheduledAt = new Date(draft.scheduledFor).toISOString();
+  const publishRkey = posts[0]?.publishRkey ?? generateTID(now);
   return {
     $type: SKEJ_SCHEDULE_COLLECTION,
     scheduledAt,
@@ -187,13 +202,16 @@ export function buildScheduleRecord(
     updatedAt: timestamp,
     status: "scheduled",
     recordType: "app.bsky.feed.post",
-    publishRkey: generateTID(now),
+    publishRkey,
     retry: {
       attemptCount: 0,
       maxAttempts: 8,
     },
     dependency: draft.dependencyScheduleUri
-      ? { dependsOnScheduleUri: draft.dependencyScheduleUri }
+      ? {
+          dependsOnScheduleUri: draft.dependencyScheduleUri,
+          relationship: draft.mode === "post" ? "after" : draft.mode,
+        }
       : undefined,
     posts,
   };

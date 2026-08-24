@@ -58,7 +58,12 @@
           },
           "timezonePolicy": {
             "type": "string",
-            "enum": ["absolute_utc", "account_local", "user_local"]
+            "enum": [
+              "absolute_utc",
+              "account_local",
+              "user_local"
+            ],
+            "maxLength": 8192
           },
           "userTimezone": {
             "type": "string",
@@ -82,11 +87,13 @@
               "published",
               "failed",
               "canceled"
-            ]
+            ],
+            "maxLength": 8192
           },
           "recordType": {
             "type": "string",
-            "description": "ATProto collection to publish, e.g. app.bsky.feed.post."
+            "description": "ATProto collection to publish, e.g. app.bsky.feed.post.",
+            "maxLength": 8192
           },
           "shadowRecord": {
             "type": "unknown",
@@ -94,14 +101,25 @@
           },
           "publishRkey": {
             "type": "string",
-            "description": "Stable rkey used for idempotent publication."
+            "description": "Stable rkey used for idempotent publication.",
+            "maxLength": 8192
           },
           "publishedUri": {
             "type": "string",
             "format": "at-uri"
           },
           "publishedCid": {
-            "type": "string"
+            "type": "string",
+            "maxLength": 8192
+          },
+          "publishedPosts": {
+            "type": "array",
+            "maxLength": 25,
+            "description": "Ordered published records for this schedule. Legacy single-post aliases remain available at the top level.",
+            "items": {
+              "type": "ref",
+              "ref": "#publishedPost"
+            }
           },
           "retry": {
             "type": "ref",
@@ -119,24 +137,46 @@
             "type": "array",
             "minLength": 0,
             "maxLength": 25,
-            "items": { "type": "ref", "ref": "#postPlan" }
+            "items": {
+              "type": "ref",
+              "ref": "#postPlan"
+            }
           }
         }
       }
     },
     "retryState": {
       "type": "object",
-      "required": ["attemptCount", "maxAttempts"],
+      "required": [
+        "attemptCount",
+        "maxAttempts"
+      ],
       "properties": {
-        "attemptCount": { "type": "integer", "minimum": 0 },
-        "lastAttemptAt": { "type": "string", "format": "datetime" },
-        "nextAttemptAt": { "type": "string", "format": "datetime" },
-        "maxAttempts": { "type": "integer", "minimum": 1 }
+        "attemptCount": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "lastAttemptAt": {
+          "type": "string",
+          "format": "datetime"
+        },
+        "nextAttemptAt": {
+          "type": "string",
+          "format": "datetime"
+        },
+        "maxAttempts": {
+          "type": "integer",
+          "minimum": 1
+        }
       }
     },
     "scheduleError": {
       "type": "object",
-      "required": ["code", "message", "classification"],
+      "required": [
+        "code",
+        "message",
+        "classification"
+      ],
       "properties": {
         "code": {
           "type": "string",
@@ -148,9 +188,13 @@
             "parent_missing",
             "parent_unavailable",
             "unknown"
-          ]
+          ],
+          "maxLength": 8192
         },
-        "message": { "type": "string", "maxLength": 8192 },
+        "message": {
+          "type": "string",
+          "maxLength": 8192
+        },
         "classification": {
           "type": "string",
           "enum": [
@@ -161,38 +205,117 @@
             "parent_missing",
             "parent_unavailable",
             "unknown"
-          ]
+          ],
+          "maxLength": 8192
         },
-        "retryAfter": { "type": "string" }
+        "retryAfter": {
+          "type": "string",
+          "maxLength": 8192
+        }
       }
     },
     "dependency": {
       "type": "object",
-      "required": ["dependsOnScheduleUri"],
+      "required": [
+        "dependsOnScheduleUri"
+      ],
       "properties": {
         "dependsOnScheduleUri": {
           "type": "string",
           "format": "at-uri"
         },
+        "relationship": {
+          "type": "string",
+          "enum": [
+            "after",
+            "reply",
+            "quote"
+          ],
+          "description": "How this schedule relates to the dependency. Missing legacy values mean after.",
+          "maxLength": 32
+        },
         "parentPublishedUri": {
           "type": "string",
           "format": "at-uri"
+        },
+        "parentPublishedCid": {
+          "type": "string",
+          "format": "cid"
+        }
+      }
+    },
+    "publishedPost": {
+      "type": "object",
+      "required": [
+        "rkey",
+        "uri",
+        "cid"
+      ],
+      "properties": {
+        "rkey": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512
+        },
+        "uri": {
+          "type": "string",
+          "format": "at-uri"
+        },
+        "cid": {
+          "type": "string",
+          "format": "cid"
+        }
+      }
+    },
+    "postSource": {
+      "type": "object",
+      "required": [
+        "format",
+        "text"
+      ],
+      "properties": {
+        "format": {
+          "type": "string",
+          "enum": [
+            "markdown"
+          ],
+          "maxLength": 32
+        },
+        "text": {
+          "type": "string",
+          "maxLength": 30000,
+          "maxGraphemes": 3000
         }
       }
     },
     "postPlan": {
       "type": "object",
       "description": "A draft app.bsky.feed.post payload. The worker sets createdAt at publish time unless shadowRecord is supplied.",
-      "required": ["text"],
+      "required": [
+        "text"
+      ],
       "properties": {
         "text": {
           "type": "string",
           "maxGraphemes": 300,
           "maxLength": 3000
         },
+        "source": {
+          "type": "ref",
+          "ref": "#postSource",
+          "description": "Optional authoring source. text remains the required Bluesky-compatible projection."
+        },
+        "publishRkey": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512,
+          "description": "Stable record key reserved for this post in an ordered thread."
+        },
         "facets": {
           "type": "array",
-          "items": { "type": "unknown" }
+          "items": {
+            "type": "unknown"
+          }
         },
         "reply": {
           "type": "unknown",
@@ -204,17 +327,26 @@
         },
         "langs": {
           "type": "array",
-          "items": { "type": "string", "maxLength": 35 },
+          "items": {
+            "type": "string",
+            "maxLength": 35
+          },
           "maxLength": 3
         },
         "labels": {
           "type": "array",
-          "items": { "type": "string", "maxLength": 128 },
+          "items": {
+            "type": "string",
+            "maxLength": 128
+          },
           "maxLength": 16
         },
         "tags": {
           "type": "array",
-          "items": { "type": "string", "maxLength": 640 },
+          "items": {
+            "type": "string",
+            "maxLength": 640
+          },
           "maxLength": 8
         }
       }

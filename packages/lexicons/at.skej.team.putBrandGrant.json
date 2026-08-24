@@ -1,0 +1,88 @@
+{
+  "lexicon": 1,
+  "id": "at.skej.team.putBrandGrant",
+  "defs": {
+    "main": {
+      "type": "procedure",
+      "input": {
+        "encoding": "application/json",
+        "schema": {
+          "type": "object",
+          "required": [
+            "teamRkey",
+            "brandDid",
+            "granteeType",
+            "grantee",
+            "capabilities"
+          ],
+          "properties": {
+            "teamRkey": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 512
+            },
+            "grantRkey": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 512
+            },
+            "brandDid": {
+              "type": "string",
+              "format": "did"
+            },
+            "granteeType": {
+              "type": "string",
+              "knownValues": [
+                "member",
+                "group"
+              ],
+              "maxLength": 8192
+            },
+            "grantee": {
+              "type": "string",
+              "maxLength": 8192
+            },
+            "capabilities": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "knownValues": [
+                  "create",
+                  "approve",
+                  "manage"
+                ],
+                "maxLength": 8192
+              },
+              "maxLength": 1000
+            }
+          }
+        }
+      },
+      "output": {
+        "encoding": "application/json",
+        "schema": {
+          "type": "ref",
+          "ref": "at.skej.defs#grantSummary"
+        }
+      },
+      "errors": [
+        {
+          "name": "AuthRequired"
+        },
+        {
+          "name": "InvalidRequest"
+        },
+        {
+          "name": "Forbidden"
+        },
+        {
+          "name": "NotFound"
+        },
+        {
+          "name": "AccountNeedsReauth"
+        }
+      ],
+      "description": "Procedure contract for at.skej.team.putBrandGrant."
+    }
+  }
+}

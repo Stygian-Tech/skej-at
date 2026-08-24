@@ -64,6 +64,51 @@ describe("schedule records", () => {
     expect(record.posts[0]?.text).toBe("hello pds");
     expect(record.posts[0]?.labels).toContain("warn");
     expect(record.publishRkey).toMatch(/^[234567abcdefghij][234567abcdefghijklmnopqrstuvwxyz]{12}$/);
+    expect(record.posts[0]?.publishRkey).toBe(record.publishRkey);
+  });
+
+  it("carries Markdown source, compiled projection, facets, and stable post rkeys", () => {
+    const record = buildScheduleRecord(
+      {
+        mode: "post",
+        scheduledFor: "2026-01-01T11:00",
+        posts: [
+          {
+            source: {
+              format: "markdown",
+              text: "👋 [Skej](https://skej.at) and **friends**",
+            },
+            text: "stale projection",
+            publishRkey: "3mstablepost1",
+          },
+        ],
+      },
+      new Date("2026-01-01T10:00:00Z")
+    );
+
+    expect(record.posts[0]?.source?.text).toContain("**friends**");
+    expect(record.posts[0]?.text).toBe("👋 Skej and friends");
+    expect(record.posts[0]?.facets?.[0]).toEqual({
+      index: { byteStart: 5, byteEnd: 9 },
+      features: [
+        { $type: "app.bsky.richtext.facet#link", uri: "https://skej.at" },
+      ],
+    });
+    expect(record.posts[0]?.publishRkey).toBe("3mstablepost1");
+    expect(record.publishRkey).toBe("3mstablepost1");
+  });
+
+  it("validates the compiled Bluesky text instead of Markdown markers", () => {
+    const source = `**${"a".repeat(300)}**`;
+    const issues = validateComposerDraft(
+      {
+        mode: "post",
+        scheduledFor: "2026-01-01T11:00",
+        posts: [{ source: { format: "markdown", text: source }, text: source }],
+      },
+      new Date("2026-01-01T10:00:00Z")
+    );
+    expect(issues.some((issue) => issue.field === "posts.0.text")).toBeFalse();
   });
 
   it("generates increasing AT Protocol TIDs", () => {

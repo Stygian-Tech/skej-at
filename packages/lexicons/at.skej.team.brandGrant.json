@@ -8,23 +8,59 @@
       "key": "tid",
       "record": {
         "type": "object",
-        "required": ["teamUri", "brandDid", "granteeType", "grantee", "capabilities", "createdAt", "updatedAt"],
+        "required": [
+          "teamUri",
+          "brandDid",
+          "granteeType",
+          "grantee",
+          "capabilities",
+          "createdAt",
+          "updatedAt"
+        ],
         "properties": {
-          "teamUri": { "type": "string", "format": "at-uri" },
-          "brandDid": { "type": "string", "format": "did" },
-          "granteeType": { "type": "string", "enum": ["member", "group"] },
+          "teamUri": {
+            "type": "string",
+            "format": "at-uri"
+          },
+          "brandDid": {
+            "type": "string",
+            "format": "did"
+          },
+          "granteeType": {
+            "type": "string",
+            "enum": [
+              "member",
+              "group"
+            ],
+            "maxLength": 8192
+          },
           "grantee": {
             "type": "string",
-            "description": "Member DID for member grants, group AT-URI for group grants."
+            "description": "Member DID for member grants, group AT-URI for group grants.",
+            "maxLength": 8192
           },
           "capabilities": {
             "type": "array",
-            "items": { "type": "string", "enum": ["create", "approve", "manage"] },
+            "items": {
+              "type": "string",
+              "enum": [
+                "create",
+                "approve",
+                "manage"
+              ],
+              "maxLength": 8192
+            },
             "minLength": 1,
             "maxLength": 3
           },
-          "createdAt": { "type": "string", "format": "datetime" },
-          "updatedAt": { "type": "string", "format": "datetime" }
+          "createdAt": {
+            "type": "string",
+            "format": "datetime"
+          },
+          "updatedAt": {
+            "type": "string",
+            "format": "datetime"
+          }
         }
       }
     }

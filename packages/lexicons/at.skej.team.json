@@ -8,13 +8,39 @@
       "key": "tid",
       "record": {
         "type": "object",
-        "required": ["ownerAdminDid", "title", "status", "createdAt", "updatedAt"],
+        "required": [
+          "ownerAdminDid",
+          "title",
+          "status",
+          "createdAt",
+          "updatedAt"
+        ],
         "properties": {
-          "ownerAdminDid": { "type": "string", "format": "did" },
-          "title": { "type": "string", "maxGraphemes": 120, "maxLength": 512 },
-          "status": { "type": "string", "enum": ["active", "archived"] },
-          "createdAt": { "type": "string", "format": "datetime" },
-          "updatedAt": { "type": "string", "format": "datetime" }
+          "ownerAdminDid": {
+            "type": "string",
+            "format": "did"
+          },
+          "title": {
+            "type": "string",
+            "maxGraphemes": 120,
+            "maxLength": 512
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "active",
+              "archived"
+            ],
+            "maxLength": 8192
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "datetime"
+          },
+          "updatedAt": {
+            "type": "string",
+            "format": "datetime"
+          }
         }
       }
     }

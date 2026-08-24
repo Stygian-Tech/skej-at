@@ -1,0 +1,51 @@
+{
+  "lexicon": 1,
+  "id": "at.skej.account.list",
+  "defs": {
+    "main": {
+      "type": "query",
+      "parameters": {
+        "type": "params",
+        "properties": {
+        }
+      },
+      "output": {
+        "encoding": "application/json",
+        "schema": {
+          "type": "object",
+          "required": [
+            "accounts"
+          ],
+          "properties": {
+            "accounts": {
+              "type": "array",
+              "items": {
+                "type": "ref",
+                "ref": "at.skej.defs#managedAccount"
+              },
+              "maxLength": 1000
+            }
+          }
+        }
+      },
+      "errors": [
+        {
+          "name": "AuthRequired"
+        },
+        {
+          "name": "InvalidRequest"
+        },
+        {
+          "name": "Forbidden"
+        },
+        {
+          "name": "NotFound"
+        },
+        {
+          "name": "AccountNeedsReauth"
+        }
+      ],
+      "description": "Query contract for at.skej.account.list."
+    }
+  }
+}

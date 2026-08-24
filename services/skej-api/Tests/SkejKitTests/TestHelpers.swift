@@ -1,6 +1,7 @@
 import Foundation
 import Hummingbird
 import HTTPTypes
+import SkejGateway
 import SkejKit
 
 func makeTestServices(proFeaturesEnabled: Bool = true) async throws -> SkejServices {

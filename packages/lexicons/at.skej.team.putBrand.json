@@ -1,0 +1,64 @@
+{
+  "lexicon": 1,
+  "id": "at.skej.team.putBrand",
+  "defs": {
+    "main": {
+      "type": "procedure",
+      "input": {
+        "encoding": "application/json",
+        "schema": {
+          "type": "object",
+          "required": [
+            "teamRkey",
+            "brandDid"
+          ],
+          "properties": {
+            "teamRkey": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 512
+            },
+            "brandDid": {
+              "type": "string",
+              "format": "did"
+            },
+            "status": {
+              "type": "string",
+              "knownValues": [
+                "active",
+                "needs_reauth",
+                "disabled"
+              ],
+              "maxLength": 8192
+            }
+          }
+        }
+      },
+      "output": {
+        "encoding": "application/json",
+        "schema": {
+          "type": "ref",
+          "ref": "at.skej.defs#brandSummary"
+        }
+      },
+      "errors": [
+        {
+          "name": "AuthRequired"
+        },
+        {
+          "name": "InvalidRequest"
+        },
+        {
+          "name": "Forbidden"
+        },
+        {
+          "name": "NotFound"
+        },
+        {
+          "name": "AccountNeedsReauth"
+        }
+      ],
+      "description": "Procedure contract for at.skej.team.putBrand."
+    }
+  }
+}

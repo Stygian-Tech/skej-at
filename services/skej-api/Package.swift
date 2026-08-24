@@ -7,41 +7,36 @@ let package = Package(
         .macOS(.v14),
     ],
     products: [
-        .library(name: "SkejKit", targets: ["SkejKit"]),
+        .library(name: "SkejGateway", targets: ["SkejGateway"]),
         .executable(name: "SkejAPI", targets: ["SkejAPI"]),
     ],
     dependencies: [
+        .package(path: "../../packages/skej-kit"),
         .package(url: "https://github.com/hummingbird-project/hummingbird.git", from: "2.6.0"),
         .package(url: "https://github.com/apple/swift-crypto.git", from: "3.12.0"),
-        .package(url: "https://github.com/scinfu/SwiftSoup.git", exact: "2.13.5"),
     ],
     targets: [
         .target(
-            name: "SkejKit",
+            name: "SkejGateway",
             dependencies: [
+                .product(name: "SkejKit", package: "skej-kit"),
                 .product(name: "Hummingbird", package: "hummingbird"),
                 .product(name: "Crypto", package: "swift-crypto"),
-                .product(name: "SwiftSoup", package: "SwiftSoup"),
-                .target(name: "CSQLite", condition: .when(platforms: [.linux])),
             ],
-            path: "Sources/SkejKit",
+            path: "Sources/SkejGateway",
             swiftSettings: [.swiftLanguageMode(.v6)]
-        ),
-        .systemLibrary(
-            name: "CSQLite",
-            path: "Sources/CSQLite",
-            providers: [.apt(["libsqlite3-dev"])]
         ),
         .executableTarget(
             name: "SkejAPI",
-            dependencies: ["SkejKit"],
+            dependencies: ["SkejGateway", .product(name: "SkejKit", package: "skej-kit")],
             path: "Sources/SkejAPI",
             swiftSettings: [.swiftLanguageMode(.v6)]
         ),
         .testTarget(
-            name: "SkejKitTests",
+            name: "SkejGatewayTests",
             dependencies: [
-                "SkejKit",
+                "SkejGateway",
+                .product(name: "SkejKit", package: "skej-kit"),
                 .product(name: "HummingbirdTesting", package: "hummingbird"),
             ],
             path: "Tests/SkejKitTests",

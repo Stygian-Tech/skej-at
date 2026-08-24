@@ -1,6 +1,5 @@
 # syntax=docker/dockerfile:1
-# Build context: services/skej-api.
-# This also tolerates a repo-root context for local/CI builds.
+# Build context: repository root (SkejGateway depends on packages/skej-kit).
 
 FROM swift:6.2-jammy AS build
 WORKDIR /build
@@ -15,12 +14,7 @@ ENV GIT_TERMINAL_PROMPT=0
 COPY . /build/source
 
 RUN set -eux; \
-    if [ -f /build/source/services/skej-api/Package.swift ]; then \
-        package_dir=/build/source/services/skej-api; \
-    else \
-        package_dir=/build/source; \
-    fi; \
-    cd "$package_dir"; \
+    cd /build/source/services/skej-api; \
     swift package resolve; \
     swift build -c release --product SkejAPI; \
     install -m 0755 .build/release/SkejAPI /build/SkejAPI
