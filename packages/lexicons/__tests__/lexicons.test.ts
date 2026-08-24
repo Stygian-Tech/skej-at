@@ -3,6 +3,14 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
 const schemaPath = join(import.meta.dir, "..", "at.skej.schedule.json");
+const socialMarkdownFixturePath = join(
+  import.meta.dir,
+  "..",
+  "..",
+  "..",
+  "test-fixtures",
+  "social-markdown.json"
+);
 const permissionLexicons = [
   "at.skej.team",
   "at.skej.team.member",
@@ -102,6 +110,125 @@ describe("at.skej.schedule lexicon", () => {
       "Deprecated"
     );
     expect(schema.defs.main.record.properties.posts.minLength).toBe(0);
+  });
+
+  it("declares backward-compatible social Markdown and thread publication fields", () => {
+    const schema = JSON.parse(readFileSync(schemaPath, "utf8")) as {
+      defs: {
+        main: {
+          record: {
+            required: string[];
+            properties: {
+              publishRkey: { type: string };
+              publishedUri: { format: string };
+              publishedCid: { type: string };
+              publishedPosts: {
+                maxLength: number;
+                items: { ref: string };
+              };
+            };
+          };
+        };
+        postPlan: {
+          required: string[];
+          properties: {
+            text: { maxGraphemes: number };
+            source: { ref: string };
+            publishRkey: { minLength: number };
+          };
+        };
+        postSource: {
+          required: string[];
+          properties: {
+            format: { enum: string[] };
+            text: { maxLength: number };
+          };
+        };
+        dependency: {
+          properties: {
+            relationship: { enum: string[] };
+            parentPublishedCid: { format: string };
+          };
+        };
+        publishedPost: {
+          required: string[];
+          properties: {
+            rkey: { minLength: number };
+            uri: { format: string };
+            cid: { format: string };
+          };
+        };
+      };
+    };
+
+    expect(schema.defs.postPlan.required).toEqual(["text"]);
+    expect(schema.defs.postPlan.properties.text.maxGraphemes).toBe(300);
+    expect(schema.defs.postPlan.properties.source.ref).toBe("#postSource");
+    expect(schema.defs.postPlan.properties.publishRkey.minLength).toBe(1);
+    expect(schema.defs.postSource.required).toEqual(["format", "text"]);
+    expect(schema.defs.postSource.properties.format.enum).toEqual(["markdown"]);
+    expect(schema.defs.dependency.properties.relationship.enum).toEqual([
+      "after",
+      "reply",
+      "quote",
+    ]);
+    expect(schema.defs.dependency.properties.parentPublishedCid.format).toBe("cid");
+    expect(schema.defs.publishedPost.required).toEqual(["rkey", "uri", "cid"]);
+    expect(schema.defs.main.record.properties.publishedPosts.items.ref).toBe(
+      "#publishedPost"
+    );
+
+    for (const field of ["source", "publishRkey"] as const) {
+      expect(schema.defs.postPlan.required).not.toContain(field);
+    }
+    expect(schema.defs.main.record.required).not.toContain("publishedPosts");
+    expect(schema.defs.main.record.properties.publishRkey.type).toBe("string");
+    expect(schema.defs.main.record.properties.publishedUri.format).toBe("at-uri");
+    expect(schema.defs.main.record.properties.publishedCid.type).toBe("string");
+  });
+});
+
+describe("social Markdown golden corpus", () => {
+  it("defines unique portable cases and projection boundaries", () => {
+    const fixture = JSON.parse(
+      readFileSync(socialMarkdownFixturePath, "utf8")
+    ) as {
+      profile: string;
+      cases: Array<{
+        name: string;
+        source: string;
+        text: string;
+        graphemeCount?: number;
+        valid?: boolean;
+        facets: Array<{
+          byteStart: number;
+          byteEnd: number;
+          type: "link" | "tag";
+          value: string;
+        }>;
+      }>;
+    };
+
+    expect(fixture.profile).toBe("skej.social-markdown.v1");
+    expect(new Set(fixture.cases.map((entry) => entry.name)).size).toBe(
+      fixture.cases.length
+    );
+    expect(fixture.cases.find((entry) => entry.name === "structural-cues-and-crlf")?.text)
+      .toStartWith("› ");
+
+    const boundaries = fixture.cases.filter(
+      (entry) => entry.graphemeCount !== undefined
+    );
+    expect(boundaries.map((entry) => [entry.graphemeCount, entry.valid])).toEqual([
+      [300, true],
+      [301, false],
+    ]);
+    for (const entry of fixture.cases) {
+      for (const facet of entry.facets) {
+        expect(facet.byteStart).toBeLessThan(facet.byteEnd);
+        expect(["link", "tag"]).toContain(facet.type);
+      }
+    }
   });
 });
 

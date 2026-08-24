@@ -112,6 +112,15 @@
             "type": "string",
             "maxLength": 8192
           },
+          "publishedPosts": {
+            "type": "array",
+            "maxLength": 25,
+            "description": "Ordered published records for this schedule. Legacy single-post aliases remain available at the top level.",
+            "items": {
+              "type": "ref",
+              "ref": "#publishedPost"
+            }
+          },
           "retry": {
             "type": "ref",
             "ref": "#retryState"
@@ -215,9 +224,67 @@
           "type": "string",
           "format": "at-uri"
         },
+        "relationship": {
+          "type": "string",
+          "enum": [
+            "after",
+            "reply",
+            "quote"
+          ],
+          "description": "How this schedule relates to the dependency. Missing legacy values mean after.",
+          "maxLength": 32
+        },
         "parentPublishedUri": {
           "type": "string",
           "format": "at-uri"
+        },
+        "parentPublishedCid": {
+          "type": "string",
+          "format": "cid"
+        }
+      }
+    },
+    "publishedPost": {
+      "type": "object",
+      "required": [
+        "rkey",
+        "uri",
+        "cid"
+      ],
+      "properties": {
+        "rkey": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512
+        },
+        "uri": {
+          "type": "string",
+          "format": "at-uri"
+        },
+        "cid": {
+          "type": "string",
+          "format": "cid"
+        }
+      }
+    },
+    "postSource": {
+      "type": "object",
+      "required": [
+        "format",
+        "text"
+      ],
+      "properties": {
+        "format": {
+          "type": "string",
+          "enum": [
+            "markdown"
+          ],
+          "maxLength": 32
+        },
+        "text": {
+          "type": "string",
+          "maxLength": 30000,
+          "maxGraphemes": 3000
         }
       }
     },
@@ -232,6 +299,17 @@
           "type": "string",
           "maxGraphemes": 300,
           "maxLength": 3000
+        },
+        "source": {
+          "type": "ref",
+          "ref": "#postSource",
+          "description": "Optional authoring source. text remains the required Bluesky-compatible projection."
+        },
+        "publishRkey": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512,
+          "description": "Stable record key reserved for this post in an ordered thread."
         },
         "facets": {
           "type": "array",

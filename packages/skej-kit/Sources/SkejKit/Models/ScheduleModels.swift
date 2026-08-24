@@ -117,39 +117,138 @@ public struct RetryState: Codable, Equatable, Sendable {
 
 public struct ScheduleDependency: Codable, Equatable, Sendable {
     public var dependsOnScheduleUri: String
+    public var relationship: ScheduleDependencyRelationship
     public var parentPublishedUri: String?
+    public var parentPublishedCid: String?
 
-    public init(dependsOnScheduleUri: String, parentPublishedUri: String? = nil) {
+    public init(
+        dependsOnScheduleUri: String,
+        relationship: ScheduleDependencyRelationship = .after,
+        parentPublishedUri: String? = nil,
+        parentPublishedCid: String? = nil
+    ) {
         self.dependsOnScheduleUri = dependsOnScheduleUri
+        self.relationship = relationship
         self.parentPublishedUri = parentPublishedUri
+        self.parentPublishedCid = parentPublishedCid
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        dependsOnScheduleUri = try container.decode(String.self, forKey: .dependsOnScheduleUri)
+        relationship = try container.decodeIfPresent(
+            ScheduleDependencyRelationship.self,
+            forKey: .relationship
+        ) ?? .after
+        parentPublishedUri = try container.decodeIfPresent(String.self, forKey: .parentPublishedUri)
+        parentPublishedCid = try container.decodeIfPresent(String.self, forKey: .parentPublishedCid)
+    }
+}
+
+public enum ScheduleDependencyRelationship: String, Codable, CaseIterable, Sendable {
+    case after
+    case reply
+    case quote
+}
+
+public enum PostSourceFormat: String, Codable, CaseIterable, Sendable {
+    case markdown
+}
+
+public struct PostSource: Codable, Equatable, Sendable {
+    public let format: PostSourceFormat
+    public let text: String
+
+    public init(format: PostSourceFormat, text: String) {
+        self.format = format
+        self.text = text
     }
 }
 
 public struct PostPlan: Codable, Equatable, Sendable {
     public let text: String
+    public let source: PostSource?
+    public let publishRkey: String?
     public let facets: [JSONValue]?
     public let reply: JSONValue?
     public let embed: JSONValue?
     public let langs: [String]?
     public let labels: [String]?
     public let tags: [String]?
+    public let unknownFields: [String: JSONValue]
 
     public init(
         text: String,
+        source: PostSource? = nil,
+        publishRkey: String? = nil,
         facets: [JSONValue]? = nil,
         reply: JSONValue? = nil,
         embed: JSONValue? = nil,
         langs: [String]? = nil,
         labels: [String]? = nil,
-        tags: [String]? = nil
+        tags: [String]? = nil,
+        unknownFields: [String: JSONValue] = [:]
     ) {
         self.text = text
+        self.source = source
+        self.publishRkey = publishRkey
         self.facets = facets
         self.reply = reply
         self.embed = embed
         self.langs = langs
         self.labels = labels
         self.tags = tags
+        self.unknownFields = unknownFields
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        text = try container.decode(String.self, forKey: .text)
+        source = try container.decodeIfPresent(PostSource.self, forKey: .source)
+        publishRkey = try container.decodeIfPresent(String.self, forKey: .publishRkey)
+        facets = try container.decodeIfPresent([JSONValue].self, forKey: .facets)
+        reply = try container.decodeIfPresent(JSONValue.self, forKey: .reply)
+        embed = try container.decodeIfPresent(JSONValue.self, forKey: .embed)
+        langs = try container.decodeIfPresent([String].self, forKey: .langs)
+        labels = try container.decodeIfPresent([String].self, forKey: .labels)
+        tags = try container.decodeIfPresent([String].self, forKey: .tags)
+
+        let dynamic = try decoder.container(keyedBy: DynamicCodingKey.self)
+        let knownKeys = Set(CodingKeys.allCases.map(\.rawValue))
+        unknownFields = try dynamic.allKeys.reduce(into: [:]) { fields, key in
+            guard !knownKeys.contains(key.stringValue) else { return }
+            fields[key.stringValue] = try dynamic.decode(JSONValue.self, forKey: key)
+        }
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var dynamic = encoder.container(keyedBy: DynamicCodingKey.self)
+        for (key, value) in unknownFields {
+            try dynamic.encode(value, forKey: DynamicCodingKey(key))
+        }
+
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(text, forKey: .text)
+        try container.encodeIfPresent(source, forKey: .source)
+        try container.encodeIfPresent(publishRkey, forKey: .publishRkey)
+        try container.encodeIfPresent(facets, forKey: .facets)
+        try container.encodeIfPresent(reply, forKey: .reply)
+        try container.encodeIfPresent(embed, forKey: .embed)
+        try container.encodeIfPresent(langs, forKey: .langs)
+        try container.encodeIfPresent(labels, forKey: .labels)
+        try container.encodeIfPresent(tags, forKey: .tags)
+    }
+
+    private enum CodingKeys: String, CodingKey, CaseIterable {
+        case text
+        case source
+        case publishRkey
+        case facets
+        case reply
+        case embed
+        case langs
+        case labels
+        case tags
     }
 }
 
@@ -254,6 +353,7 @@ public struct SkejScheduleRecord: Codable, Equatable, Sendable {
     public var publishRkey: String
     public var publishedUri: String?
     public var publishedCid: String?
+    public var publishedPosts: [PublishedPostReference]
     public var retry: RetryState
     public var lastError: ScheduleError?
     public var dependency: ScheduleDependency?
@@ -287,6 +387,7 @@ public struct SkejScheduleRecord: Codable, Equatable, Sendable {
         publishRkey: String,
         publishedUri: String? = nil,
         publishedCid: String? = nil,
+        publishedPosts: [PublishedPostReference] = [],
         retry: RetryState = RetryState(),
         lastError: ScheduleError? = nil,
         dependency: ScheduleDependency? = nil,
@@ -310,6 +411,7 @@ public struct SkejScheduleRecord: Codable, Equatable, Sendable {
         self.publishRkey = publishRkey
         self.publishedUri = publishedUri
         self.publishedCid = publishedCid
+        self.publishedPosts = publishedPosts
         self.retry = retry
         self.lastError = lastError
         self.dependency = dependency
@@ -358,6 +460,10 @@ public struct SkejScheduleRecord: Codable, Equatable, Sendable {
         self.publishRkey = try container.decodeIfPresent(String.self, forKey: .publishRkey) ?? ATProtoTID.generate()
         self.publishedUri = try container.decodeIfPresent(String.self, forKey: .publishedUri)
         self.publishedCid = try container.decodeIfPresent(String.self, forKey: .publishedCid)
+        self.publishedPosts = try container.decodeIfPresent(
+            [PublishedPostReference].self,
+            forKey: .publishedPosts
+        ) ?? []
         self.retry = try container.decodeIfPresent(RetryState.self, forKey: .retry) ?? RetryState()
         self.lastError = try container.decodeIfPresent(ScheduleError.self, forKey: .lastError)
         self.dependency = try container.decodeIfPresent(ScheduleDependency.self, forKey: .dependency)
@@ -394,6 +500,9 @@ public struct SkejScheduleRecord: Codable, Equatable, Sendable {
         try container.encode(publishRkey, forKey: .publishRkey)
         try container.encodeIfPresent(publishedUri, forKey: .publishedUri)
         try container.encodeIfPresent(publishedCid, forKey: .publishedCid)
+        if !publishedPosts.isEmpty {
+            try container.encode(publishedPosts, forKey: .publishedPosts)
+        }
         try container.encode(retry, forKey: .retry)
         try container.encodeIfPresent(lastError, forKey: .lastError)
         try container.encodeIfPresent(dependency, forKey: .dependency)
@@ -419,6 +528,7 @@ public struct SkejScheduleRecord: Codable, Equatable, Sendable {
         case publishRkey
         case publishedUri
         case publishedCid
+        case publishedPosts
         case retry
         case lastError
         case dependency
@@ -1050,6 +1160,22 @@ public struct PublishedPost: Codable, Equatable, Sendable {
     public let cid: String
 
     public init(uri: String, cid: String) {
+        self.uri = uri
+        self.cid = cid
+    }
+}
+
+/// An ordered published-thread entry retained on the schedule record.
+///
+/// `PublishedPost` remains the PDS client's immediate write result; this type also
+/// carries the stable record key needed to resume or reconcile multi-post publishes.
+public struct PublishedPostReference: Codable, Equatable, Sendable {
+    public let rkey: String
+    public let uri: String
+    public let cid: String
+
+    public init(rkey: String, uri: String, cid: String) {
+        self.rkey = rkey
         self.uri = uri
         self.cid = cid
     }
