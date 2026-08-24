@@ -4,13 +4,19 @@
     {
       "name": "emphasis-strike-and-inline-code",
       "source": "**Bold** and *italic* and _also italic_, ~~gone~~, `x * y #literal`.",
-      "text": "Bold and italic and also italic, gone, x * y #literal.",
+      "text": "Bold and italic and also italic, gone, `x * y #literal`.",
       "facets": []
     },
     {
       "name": "nested-emphasis",
       "source": "**bold and _nested_**",
       "text": "bold and nested",
+      "facets": []
+    },
+    {
+      "name": "client-rendered-inline-code-preserves-markers-and-suppresses-facets",
+      "source": "`https://example.com #code`",
+      "text": "`https://example.com #code`",
       "facets": []
     },
     {

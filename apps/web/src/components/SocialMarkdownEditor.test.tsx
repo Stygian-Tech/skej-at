@@ -71,22 +71,22 @@ function EditorPair() {
 }
 
 describe("SocialMarkdownEditor", () => {
-  it("formats only the selected post and restores the selected text", async () => {
+  it("formats only the selected post as monospace and restores the selected text", async () => {
     await render(<EditorPair />);
     const textareas = Array.from(container.querySelectorAll("textarea"));
     textareas[0].setSelectionRange(0, 5);
     const firstToolbar = container.querySelectorAll('[role="toolbar"]')[0];
     if (!firstToolbar) throw new Error("Formatting toolbar was not rendered");
-    const bold = firstToolbar.querySelector('button[aria-label="Bold"]');
-    if (!bold) throw new Error("Bold button was not rendered");
+    const monospace = firstToolbar.querySelector('button[aria-label="Monospace"]');
+    if (!monospace) throw new Error("Monospace button was not rendered");
 
-    await act(async () => click(bold));
+    await act(async () => click(monospace));
     await new Promise((resolve) => setTimeout(resolve, 0));
 
-    expect(textareas[0].value).toBe("**first** post");
+    expect(textareas[0].value).toBe("`first` post");
     expect(textareas[1].value).toBe("second post");
-    expect(textareas[0].selectionStart).toBe(2);
-    expect(textareas[0].selectionEnd).toBe(7);
+    expect(textareas[0].selectionStart).toBe(1);
+    expect(textareas[0].selectionEnd).toBe(6);
   });
 
   it("supports keyboard shortcuts without affecting another post", async () => {
@@ -140,6 +140,38 @@ describe("SocialMarkdownEditor", () => {
     expect(textarea.value.slice(textarea.selectionStart, textarea.selectionEnd)).toBe(
       "example.com"
     );
+  });
+
+  it("shows only native links and limited-support code controls", async () => {
+    await render(<EditorPair />);
+    const toolbar = container.querySelector('[role="toolbar"]');
+    const labels = Array.from(toolbar?.querySelectorAll("button") ?? []).map((button) =>
+      button.getAttribute("aria-label")
+    );
+
+    expect(labels).toEqual(["Link", "Monospace", "Code block"]);
+    expect(container.textContent).toContain(
+      "Monospace and code blocks have limited client support."
+    );
+  });
+
+  it("renders inline monospace and fenced code blocks in the Bluesky output", async () => {
+    const post: PostPlan = {
+      source: {
+        format: "markdown",
+        text: "Use `mono` here.\n```ts\nconst answer = 42;\n```",
+      },
+      text: "stale",
+    };
+    await render(
+      <SocialMarkdownEditor index={0} onChange={() => undefined} post={post} />
+    );
+
+    const output = container.querySelector('[id="post-1-bluesky-output"]');
+    const inlineCode = output?.querySelector(":scope > code");
+    const block = output?.querySelector("pre code");
+    expect(inlineCode?.textContent).toBe("mono");
+    expect(block?.textContent).toBe("const answer = 42;");
   });
 
   it("keeps legacy literal Markdown until the author edits it", async () => {

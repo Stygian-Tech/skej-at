@@ -59,6 +59,27 @@ describe("social Markdown commands", () => {
     ).toEqual({ text: "hello", selectionStart: 0, selectionEnd: 5 });
   });
 
+  it("wraps and unwraps selected lines as a fenced code block", () => {
+    const wrapped = applySocialMarkdownCommand("let x = 1;", "code-block", 0, 10);
+    expect(wrapped).toEqual({
+      text: "```\nlet x = 1;\n```",
+      selectionStart: 4,
+      selectionEnd: 14,
+    });
+    expect(
+      applySocialMarkdownCommand(
+        wrapped.text,
+        "code-block",
+        wrapped.selectionStart,
+        wrapped.selectionEnd
+      )
+    ).toEqual({
+      text: "let x = 1;",
+      selectionStart: 0,
+      selectionEnd: 10,
+    });
+  });
+
   it("prefixes each selected list line and toggles the list off", () => {
     const listed = applySocialMarkdownCommand("one\ntwo", "unordered-list", 0, 7);
     expect(listed.text).toBe("- one\n- two");

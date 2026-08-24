@@ -59,6 +59,30 @@ struct ATProtoPDSClientTests {
         #expect(facetByteRange(facets[0]) == 0..<21)
     }
 
+    @Test func preservesCodeMarkersForClientSideRendering() async throws {
+        let http = RecordingPublishHTTPClient()
+        let client = try await authenticatedClient(http: http)
+        var record = makeRecord()
+        record.publishRkey = "3clientcodefmt"
+        record.posts = [PostPlan(
+            text: "stale",
+            source: PostSource(
+                format: .markdown,
+                text: "Use `mono`.\n```swift\nlet answer = 42\n```"
+            ),
+            publishRkey: record.publishRkey
+        )]
+
+        _ = try await client.publishThread(did: "did:plc:test", record: record)
+
+        let requests = await http.publishBodies()
+        #expect(
+            stringValue(requests[0], path: ["record", "text"]) ==
+                "Use `mono`.\n```swift\nlet answer = 42\n```"
+        )
+        #expect(value(requests[0], path: ["record", "facets"]) == nil)
+    }
+
     @Test func appliesExternalReplyToFirstPostThenChainsThread() async throws {
         let http = RecordingPublishHTTPClient()
         let client = try await authenticatedClient(http: http)
