@@ -136,33 +136,138 @@ public struct ATProtoPDSClient: PDSClient {
         return try JSONDecoder().decode(UploadBlobResponse.self, from: responseData).blob
     }
 
-    public func publishThread(did: String, record: SkejScheduleRecord) async throws -> PublishedPost {
+    public func publishThread(did: String, record: SkejScheduleRecord) async throws -> [PublishedPostReference] {
         let session = try await authenticatedSession(did: did)
-        let recordValue: JSONValue
         if let shadowRecord = record.shadowRecord {
-            recordValue = PostRecordCanonicalizer.canonicalizeFeedPost(shadowRecord)
-        } else if let plan = record.posts.first {
-            recordValue = .object(try PostRecordCanonicalizer.feedPostValue(
-                plan,
-                createdAt: Timestamp.iso8601()
-            ))
-        } else {
+            let published = try await putFeedRecord(
+                session: session,
+                did: did,
+                collection: record.recordType,
+                rkey: record.publishRkey,
+                value: PostRecordCanonicalizer.canonicalizeFeedPost(shadowRecord)
+            )
+            return [PublishedPostReference(
+                rkey: record.publishRkey,
+                uri: published.uri,
+                cid: published.cid
+            )]
+        }
+        guard !record.posts.isEmpty else {
             throw PDSClientError.publishFailed("No record payload to publish")
         }
+
+        var publishedPosts: [PublishedPostReference] = []
+        let createdAt = Timestamp.iso8601()
+        for (index, plan) in record.posts.enumerated() {
+            guard let publishRkey = plan.publishRkey ?? (index == 0 ? record.publishRkey : nil),
+                  !publishRkey.isEmpty
+            else {
+                throw PDSClientError.publishFailed("Post \(index + 1) has no stable publish rkey")
+            }
+            var value = try PostRecordCanonicalizer.feedPostValue(plan, createdAt: createdAt)
+            if index == 0 {
+                try applyExternalRelationship(record.dependency, to: &value)
+            } else if let root = publishedPosts.first, let parent = publishedPosts.last {
+                value["reply"] = replyValue(root: root, parent: parent)
+            }
+            let published = try await putFeedRecord(
+                session: session,
+                did: did,
+                collection: record.recordType,
+                rkey: publishRkey,
+                value: .object(value)
+            )
+            publishedPosts.append(PublishedPostReference(
+                rkey: publishRkey,
+                uri: published.uri,
+                cid: published.cid
+            ))
+        }
+        return publishedPosts
+    }
+
+    private func putFeedRecord(
+        session: AuthenticatedATProtoSession,
+        did: String,
+        collection: String,
+        rkey: String,
+        value: JSONValue
+    ) async throws -> PublishedPost {
         let responseData = try await xrpc(
             session: session,
             method: "POST",
             path: "com.atproto.repo.putRecord",
             body: [
                 "repo": .string(did),
-                "collection": .string(record.recordType),
-                "rkey": .string(record.publishRkey),
+                "collection": .string(collection),
+                "rkey": .string(rkey),
                 "validate": .bool(true),
-                "record": recordValue,
+                "record": value,
             ]
         )
         let created = try JSONDecoder().decode(CreateRecordResponse.self, from: responseData)
         return PublishedPost(uri: created.uri, cid: created.cid)
+    }
+
+    private func applyExternalRelationship(
+        _ dependency: ScheduleDependency?,
+        to post: inout [String: JSONValue]
+    ) throws {
+        guard let dependency, dependency.relationship != .after else { return }
+        guard let uri = dependency.parentPublishedUri,
+              let cid = dependency.parentPublishedCid
+        else {
+            throw PDSClientError.publishFailed("Parent URI and CID are required for \(dependency.relationship.rawValue)")
+        }
+        let parent = PublishedPostReference(rkey: "", uri: uri, cid: cid)
+        switch dependency.relationship {
+        case .after:
+            break
+        case .reply:
+            post["reply"] = replyValue(root: parent, parent: parent)
+        case .quote:
+            let quote = recordEmbedValue(reference: parent)
+            if let media = post["embed"], isMediaEmbed(media) {
+                post["embed"] = .object([
+                    "$type": .string("app.bsky.embed.recordWithMedia"),
+                    "record": quote,
+                    "media": media,
+                ])
+            } else {
+                post["embed"] = quote
+            }
+        }
+    }
+
+    private func replyValue(
+        root: PublishedPostReference,
+        parent: PublishedPostReference
+    ) -> JSONValue {
+        .object([
+            "root": strongReferenceValue(root),
+            "parent": strongReferenceValue(parent),
+        ])
+    }
+
+    private func recordEmbedValue(reference: PublishedPostReference) -> JSONValue {
+        .object([
+            "$type": .string("app.bsky.embed.record"),
+            "record": strongReferenceValue(reference),
+        ])
+    }
+
+    private func strongReferenceValue(_ reference: PublishedPostReference) -> JSONValue {
+        .object([
+            "uri": .string(reference.uri),
+            "cid": .string(reference.cid),
+        ])
+    }
+
+    private func isMediaEmbed(_ value: JSONValue) -> Bool {
+        guard case let .object(embed) = value,
+              case let .string(type)? = embed["$type"]
+        else { return false }
+        return type != "app.bsky.embed.record" && type != "app.bsky.embed.recordWithMedia"
     }
 
     public func getBrandProfile(did: String) async throws -> BrandProfile {

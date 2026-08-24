@@ -1167,6 +1167,99 @@ private func seedDemoData(services: SkejServices) async throws {
         services: services
     )
 
+    let publishedParent = try await services.pdsClient.getSchedule(
+        did: appDid,
+        rkey: "demo-app-published"
+    )
+    try await seedSchedule(
+        did: ownerDid,
+        rkey: "demo-markdown-unicode-link",
+        title: "Markdown and Unicode",
+        text: "",
+        status: .scheduled,
+        scheduledAt: iso(daysFromNow: 5, hour: 10, from: now),
+        teamUri: teamUri,
+        createdByDid: producerDid,
+        approvedByDid: adminDid,
+        posts: [PostPlan(
+            text: "stale projection",
+            source: PostSource(
+                format: .markdown,
+                text: "👋 **Skej** makes [AT Protocol](https://atproto.com) scheduling easier."
+            )
+        )],
+        services: services
+    )
+    try await seedSchedule(
+        did: ownerDid,
+        rkey: "demo-markdown-thread",
+        title: "Markdown Thread",
+        text: "",
+        status: .scheduled,
+        scheduledAt: iso(daysFromNow: 5, hour: 11, from: now),
+        teamUri: teamUri,
+        createdByDid: producerDid,
+        approvedByDid: adminDid,
+        posts: [
+            PostPlan(text: "", source: PostSource(format: .markdown, text: "**One:** announce the launch.")),
+            PostPlan(text: "", source: PostSource(format: .markdown, text: "**Two:** link [the notes](https://skej.at).")),
+            PostPlan(text: "", source: PostSource(format: .markdown, text: "> Invite everyone to reply.")),
+        ],
+        services: services
+    )
+    try await seedSchedule(
+        did: ownerDid,
+        rkey: "demo-markdown-reply",
+        title: "Markdown Reply",
+        text: "",
+        status: .scheduled,
+        scheduledAt: iso(daysFromNow: 5, hour: 12, from: now),
+        teamUri: teamUri,
+        createdByDid: userDid,
+        approvedByDid: adminDid,
+        dependency: ScheduleDependency(
+            dependsOnScheduleUri: ATURI.schedule(did: appDid, rkey: "demo-app-published"),
+            relationship: .reply,
+            parentPublishedUri: publishedParent?.publishedUri,
+            parentPublishedCid: publishedParent?.publishedCid
+        ),
+        posts: [PostPlan(
+            text: "",
+            source: PostSource(format: .markdown, text: "A **Markdown** reply to the changelog.")
+        )],
+        services: services
+    )
+    try await seedSchedule(
+        did: ownerDid,
+        rkey: "demo-markdown-quote",
+        title: "Markdown Quote with Media",
+        text: "",
+        status: .scheduled,
+        scheduledAt: iso(daysFromNow: 5, hour: 13, from: now),
+        teamUri: teamUri,
+        createdByDid: producerDid,
+        approvedByDid: ownerDid,
+        dependency: ScheduleDependency(
+            dependsOnScheduleUri: ATURI.schedule(did: appDid, rkey: "demo-app-published"),
+            relationship: .quote,
+            parentPublishedUri: publishedParent?.publishedUri,
+            parentPublishedCid: publishedParent?.publishedCid
+        ),
+        posts: [PostPlan(
+            text: "",
+            source: PostSource(format: .markdown, text: "Worth quoting with [context](https://skej.at)."),
+            embed: .object([
+                "$type": .string("app.bsky.embed.external"),
+                "external": .object([
+                    "uri": .string("https://skej.at"),
+                    "title": .string("Skej"),
+                    "description": .string("AT Protocol scheduling"),
+                ]),
+            ])
+        )],
+        services: services
+    )
+
     try await services.store.insertAuditEvent(did: ownerDid, scheduleRkey: nil, action: "demo_seeded", message: "Loaded demo team, brand, and schedule data.", now: nowString)
     try await services.store.insertAuditEvent(did: studioDid, scheduleRkey: nil, action: "demo_seeded", message: "Loaded demo brand schedule data.", now: nowString)
     try await services.store.insertAuditEvent(did: appDid, scheduleRkey: nil, action: "demo_seeded", message: "Loaded demo brand schedule data.", now: nowString)
@@ -1184,12 +1277,11 @@ private func seedSchedule(
     approvedByDid: String?,
     lastError: ScheduleError? = nil,
     dependency: ScheduleDependency? = nil,
+    posts: [PostPlan]? = nil,
     services: SkejServices
 ) async throws {
     let now = Timestamp.iso8601()
-    let publishRkey = "publish-\(rkey)"
-    let publishedUri = status == .published ? ATURI.published(did: did, recordType: "app.bsky.feed.post", publishRkey: publishRkey) : nil
-    let record = SkejScheduleRecord(
+    var record = SkejScheduleRecord(
         scheduledAt: scheduledAt,
         title: title,
         teamUri: teamUri,
@@ -1202,9 +1294,7 @@ private func seedSchedule(
         updatedAt: now,
         status: status,
         recordType: "app.bsky.feed.post",
-        publishRkey: publishRkey,
-        publishedUri: publishedUri,
-        publishedCid: publishedUri == nil ? nil : "bafy\(publishRkey)",
+        publishRkey: ATProtoTID.generate(),
         retry: RetryState(
             attemptCount: status == .failed ? 3 : 0,
             lastAttemptAt: status == .failed ? scheduledAt : nil,
@@ -1213,8 +1303,21 @@ private func seedSchedule(
         ),
         lastError: lastError,
         dependency: dependency,
-        posts: [PostPlan(text: text, langs: ["en"], tags: ["skej", "demo"])]
+        posts: posts ?? [PostPlan(text: text, langs: ["en"], tags: ["skej", "demo"])]
     )
+    canonicalizeForPersistence(&record)
+    if status == .published {
+        record.publishedPosts = record.posts.compactMap { post in
+            guard let publishRkey = post.publishRkey else { return nil }
+            return PublishedPostReference(
+                rkey: publishRkey,
+                uri: ATURI.published(did: did, recordType: record.recordType, publishRkey: publishRkey),
+                cid: "bafy\(publishRkey)"
+            )
+        }
+        record.publishedUri = record.publishedPosts.first?.uri
+        record.publishedCid = record.publishedPosts.first?.cid
+    }
     try await services.pdsClient.writeSchedule(did: did, rkey: rkey, record: record)
     try await services.store.upsertScheduleJob(job(did: did, rkey: rkey, record: record, attempts: status == .failed ? 3 : 0), now: now)
 }
@@ -1253,13 +1356,7 @@ private func listSchedules(did: String, services: SkejServices) async throws -> 
 private func createSchedule(did: String, body: CreateScheduleRequest, viewer: Viewer, services: SkejServices) async throws -> Response {
     var record = body.record
     coerceDraftWithoutProFeatures(&record, services: services)
-    record.posts = record.posts.map(PostRecordCanonicalizer.canonicalize)
-    if let shadowRecord = record.shadowRecord {
-        record.shadowRecord = PostRecordCanonicalizer.canonicalizeFeedPost(shadowRecord)
-    }
-    if record.recordType == "app.bsky.feed.post", !ATProtoTID.isValid(record.publishRkey) {
-        record.publishRkey = ATProtoTID.generate()
-    }
+    canonicalizeForPersistence(&record)
     try validate(record: record)
     let now = Timestamp.iso8601()
     let rkey = newRkey()
@@ -1291,18 +1388,12 @@ private func updateSchedule(did: String, rkey: String, body: CreateScheduleReque
     guard existing != nil else {
         throw APIError(status: .notFound, code: "not_found", message: "Schedule not found")
     }
+    let existingRecord = try await services.pdsClient.getSchedule(did: did, rkey: rkey)
     var record = body.record
     coerceDraftWithoutProFeatures(&record, services: services)
-    record.posts = record.posts.map(PostRecordCanonicalizer.canonicalize)
-    if let shadowRecord = record.shadowRecord {
-        record.shadowRecord = PostRecordCanonicalizer.canonicalizeFeedPost(shadowRecord)
-    }
-    if record.recordType == "app.bsky.feed.post", !ATProtoTID.isValid(record.publishRkey) {
-        record.publishRkey = ATProtoTID.generate()
-    }
+    canonicalizeForPersistence(&record, preservingRkeysFrom: existingRecord?.posts)
     try validate(record: record)
     let now = Timestamp.iso8601()
-    let existingRecord = try await services.pdsClient.getSchedule(did: did, rkey: rkey)
     if record.status == .scheduled, existingRecord?.status == .draft {
         let permission = try await requireBrandCapability(.approve, brandDid: did, viewer: viewer, services: services)
         record.teamUri = record.teamUri ?? existingRecord?.teamUri ?? permission?.teamUri
@@ -1383,9 +1474,10 @@ private func duplicateSchedule(did: String, rkey: String, services: SkejServices
     let now = Timestamp.iso8601()
     let newRkey = newRkey()
     record.status = .draft
-    record.publishRkey = ATProtoTID.generate()
+    assignStablePublishRkeys(&record, regenerateAll: true)
     record.publishedUri = nil
     record.publishedCid = nil
+    record.publishedPosts = []
     record.lastError = nil
     record.retry = RetryState()
     record.createdAt = now
@@ -1410,13 +1502,20 @@ private func publishNow(did: String, rkey: String, services: SkejServices) async
         throw APIError(status: .notFound, code: "not_found", message: "Schedule not found")
     }
     let now = Timestamp.iso8601()
+    canonicalizeForPersistence(&record)
+    try await resolvePublishedDependency(&record, services: services)
     record.status = .publishing
     record.updatedAt = now
     try await services.pdsClient.writeSchedule(did: did, rkey: rkey, record: record)
-    let published = try await services.pdsClient.publishThread(did: did, record: record)
+    let publishedPosts = try await services.pdsClient.publishThread(did: did, record: record)
+    guard let firstPublished = publishedPosts.first else {
+        throw APIError(status: .internalServerError, code: "publish_failed", message: "PDS returned no published posts")
+    }
+    let published = PublishedPost(uri: firstPublished.uri, cid: firstPublished.cid)
     record.status = .published
     record.publishedUri = published.uri
     record.publishedCid = published.cid
+    record.publishedPosts = publishedPosts
     record.updatedAt = now
     try await services.pdsClient.writeSchedule(did: did, rkey: rkey, record: record)
     try await services.store.markJobPublished(did: did, rkey: rkey, published: published, now: now)
@@ -1686,6 +1785,106 @@ private func validate(record: SkejScheduleRecord) throws {
     if record.recordType == "app.bsky.feed.post", !ATProtoTID.isValid(record.publishRkey) {
         throw APIError(status: .badRequest, code: "invalid_publish_rkey", message: "Bluesky post publishRkey must be an AT Protocol TID")
     }
+    if record.recordType == "app.bsky.feed.post" {
+        guard record.posts.allSatisfy({ $0.text.count <= 300 }) else {
+            throw APIError(status: .badRequest, code: "invalid_post_text", message: "Each published post must be 300 characters or fewer")
+        }
+        let postRkeys = record.posts.compactMap(\.publishRkey)
+        guard postRkeys.count == record.posts.count,
+              postRkeys.allSatisfy(ATProtoTID.isValid),
+              Set(postRkeys).count == postRkeys.count
+        else {
+            throw APIError(status: .badRequest, code: "invalid_post_publish_rkey", message: "Every post needs a unique AT Protocol publish rkey")
+        }
+    }
+}
+
+private func canonicalizeForPersistence(
+    _ record: inout SkejScheduleRecord,
+    preservingRkeysFrom existingPosts: [PostPlan]? = nil
+) {
+    record.posts = record.posts.map(PostRecordCanonicalizer.canonicalize)
+    if let shadowRecord = record.shadowRecord {
+        record.shadowRecord = PostRecordCanonicalizer.canonicalizeFeedPost(shadowRecord)
+    }
+    assignStablePublishRkeys(&record, preservingRkeysFrom: existingPosts)
+}
+
+private func assignStablePublishRkeys(
+    _ record: inout SkejScheduleRecord,
+    preservingRkeysFrom existingPosts: [PostPlan]? = nil,
+    regenerateAll: Bool = false
+) {
+    guard record.recordType == "app.bsky.feed.post" else { return }
+    if record.posts.isEmpty {
+        if regenerateAll || !ATProtoTID.isValid(record.publishRkey) {
+            record.publishRkey = ATProtoTID.generate()
+        }
+        return
+    }
+
+    var assigned = Set<String>()
+    record.posts = record.posts.enumerated().map { index, post in
+        let candidate: String?
+        if !regenerateAll,
+           let existing = post.publishRkey,
+           ATProtoTID.isValid(existing),
+           !assigned.contains(existing) {
+            candidate = existing
+        } else if !regenerateAll,
+                  index < (existingPosts?.count ?? 0),
+                  let existing = existingPosts?[index].publishRkey,
+                  ATProtoTID.isValid(existing),
+                  !assigned.contains(existing) {
+            candidate = existing
+        } else if !regenerateAll,
+                  index == 0,
+                  ATProtoTID.isValid(record.publishRkey),
+                  !assigned.contains(record.publishRkey) {
+            candidate = record.publishRkey
+        } else {
+            candidate = nil
+        }
+        let publishRkey = candidate ?? ATProtoTID.generate()
+        assigned.insert(publishRkey)
+        return PostPlan(
+            text: post.text,
+            source: post.source,
+            publishRkey: publishRkey,
+            facets: post.facets,
+            reply: post.reply,
+            embed: post.embed,
+            langs: post.langs,
+            labels: post.labels,
+            tags: post.tags,
+            unknownFields: post.unknownFields
+        )
+    }
+    record.publishRkey = record.posts[0].publishRkey ?? record.publishRkey
+}
+
+private func resolvePublishedDependency(
+    _ record: inout SkejScheduleRecord,
+    services: SkejServices
+) async throws {
+    guard let dependency = record.dependency,
+          dependency.relationship != .after,
+          dependency.parentPublishedUri == nil || dependency.parentPublishedCid == nil
+    else { return }
+    guard let parent = try await services.store.findPublishedSchedule(
+        scheduleUri: dependency.dependsOnScheduleUri
+    ),
+          let uri = parent.record.publishedUri ?? parent.record.publishedPosts.first?.uri,
+          let cid = parent.record.publishedCid ?? parent.record.publishedPosts.first?.cid
+    else {
+        throw APIError(status: .conflict, code: "parent_unavailable", message: "Parent schedule has not published yet")
+    }
+    record.dependency = ScheduleDependency(
+        dependsOnScheduleUri: dependency.dependsOnScheduleUri,
+        relationship: dependency.relationship,
+        parentPublishedUri: uri,
+        parentPublishedCid: cid
+    )
 }
 
 private func job(did: String, rkey: String, record: SkejScheduleRecord, attempts: Int = 0) -> ScheduledJob {

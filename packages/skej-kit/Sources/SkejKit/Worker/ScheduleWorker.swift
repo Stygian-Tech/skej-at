@@ -45,11 +45,16 @@ public struct ScheduleWorker: Sendable {
                   let parentPublishedUri = parent.record.publishedUri
             else { continue }
             if var record = try await pdsClient.getSchedule(did: job.did, rkey: job.rkey) {
+                let relationship = record.dependency?.relationship ?? .after
+                let parentPublishedCid = parent.record.publishedCid ?? parent.record.publishedPosts.first?.cid
+                if relationship != .after, parentPublishedCid == nil { continue }
                 record.status = .scheduled
                 record.lastError = nil
                 record.dependency = ScheduleDependency(
                     dependsOnScheduleUri: dependency,
-                    parentPublishedUri: parentPublishedUri
+                    relationship: relationship,
+                    parentPublishedUri: parentPublishedUri,
+                    parentPublishedCid: parentPublishedCid
                 )
                 record.updatedAt = nowString
                 try await pdsClient.writeSchedule(did: job.did, rkey: job.rkey, record: record)
@@ -76,24 +81,26 @@ public struct ScheduleWorker: Sendable {
                 throw ScheduleError(code: .recordInvalid, message: "Schedule record missing from PDS")
             }
 
-            if record.recordType == "app.bsky.feed.post", !ATProtoTID.isValid(record.publishRkey) {
-                let legacyRkey = record.publishRkey
-                record.publishRkey = ATProtoTID.generate(date: now)
-                record.updatedAt = nowString
-                try await pdsClient.writeSchedule(did: job.did, rkey: job.rkey, record: record)
-                try await store.updatePublishRkey(
-                    did: job.did,
-                    rkey: job.rkey,
-                    publishRkey: record.publishRkey,
-                    now: nowString
-                )
-                try await store.insertAuditEvent(
-                    did: job.did,
-                    scheduleRkey: job.rkey,
-                    action: "publish_rkey_upgraded",
-                    message: "Replaced legacy publish rkey \(legacyRkey) with AT Protocol TID \(record.publishRkey).",
-                    now: nowString
-                )
+            if record.recordType == "app.bsky.feed.post" {
+                let previousRkey = record.publishRkey
+                let changed = assignStablePublishRkeys(record: &record, now: now)
+                if changed {
+                    record.updatedAt = nowString
+                    try await pdsClient.writeSchedule(did: job.did, rkey: job.rkey, record: record)
+                    try await store.updatePublishRkey(
+                        did: job.did,
+                        rkey: job.rkey,
+                        publishRkey: record.publishRkey,
+                        now: nowString
+                    )
+                    try await store.insertAuditEvent(
+                        did: job.did,
+                        scheduleRkey: job.rkey,
+                        action: "publish_rkey_upgraded",
+                        message: "Assigned stable AT Protocol publish rkeys (first: \(previousRkey) → \(record.publishRkey)).",
+                        now: nowString
+                    )
+                }
             }
 
             if record.status == .canceled {
@@ -108,8 +115,11 @@ public struct ScheduleWorker: Sendable {
             }
 
             if let dependency = record.dependency {
-                guard let parent = try await store.findPublishedSchedule(scheduleUri: dependency.dependsOnScheduleUri),
-                      let parentPublishedUri = parent.record.publishedUri
+                let parent = try await store.findPublishedSchedule(scheduleUri: dependency.dependsOnScheduleUri)
+                let parentPublishedUri = parent?.record.publishedUri ?? parent?.record.publishedPosts.first?.uri
+                let parentPublishedCid = parent?.record.publishedCid ?? parent?.record.publishedPosts.first?.cid
+                guard let parentPublishedUri,
+                      dependency.relationship == .after || parentPublishedCid != nil
                 else {
                     let error = ScheduleError(
                         code: .parentUnavailable,
@@ -132,7 +142,9 @@ public struct ScheduleWorker: Sendable {
                 }
                 record.dependency = ScheduleDependency(
                     dependsOnScheduleUri: dependency.dependsOnScheduleUri,
-                    parentPublishedUri: parentPublishedUri
+                    relationship: dependency.relationship,
+                    parentPublishedUri: parentPublishedUri,
+                    parentPublishedCid: parentPublishedCid
                 )
                 try await store.updateParentPublishedUri(
                     did: job.did,
@@ -169,10 +181,15 @@ public struct ScheduleWorker: Sendable {
                 now: nowString
             )
 
-            let published = try await pdsClient.publishThread(did: job.did, record: record)
+            let publishedPosts = try await pdsClient.publishThread(did: job.did, record: record)
+            guard let firstPublished = publishedPosts.first else {
+                throw ScheduleError(code: .recordInvalid, message: "PDS returned no published posts")
+            }
+            let published = PublishedPost(uri: firstPublished.uri, cid: firstPublished.cid)
             record.status = .published
             record.publishedUri = published.uri
             record.publishedCid = published.cid
+            record.publishedPosts = publishedPosts
             record.updatedAt = nowString
             record.lastError = nil
             try await pdsClient.writeSchedule(did: job.did, rkey: job.rkey, record: record)
@@ -190,6 +207,50 @@ public struct ScheduleWorker: Sendable {
         } catch {
             await handlePublishError(Self.classify(error), job: job, now: now, nowString: nowString)
         }
+    }
+
+    @discardableResult
+    private func assignStablePublishRkeys(
+        record: inout SkejScheduleRecord,
+        now: Date
+    ) -> Bool {
+        var changed = false
+        var assigned = Set<String>()
+        record.posts = record.posts.enumerated().map { index, post in
+            let candidate: String?
+            if let existing = post.publishRkey,
+               ATProtoTID.isValid(existing),
+               !assigned.contains(existing) {
+                candidate = existing
+            } else if index == 0,
+                      ATProtoTID.isValid(record.publishRkey),
+                      !assigned.contains(record.publishRkey) {
+                candidate = record.publishRkey
+            } else {
+                candidate = nil
+            }
+            let rkey = candidate ?? ATProtoTID.generate(date: now)
+            assigned.insert(rkey)
+            if post.publishRkey != rkey { changed = true }
+            return PostPlan(
+                text: post.text,
+                source: post.source,
+                publishRkey: rkey,
+                facets: post.facets,
+                reply: post.reply,
+                embed: post.embed,
+                langs: post.langs,
+                labels: post.labels,
+                tags: post.tags,
+                unknownFields: post.unknownFields
+            )
+        }
+        if let first = record.posts.first?.publishRkey,
+           record.publishRkey != first {
+            record.publishRkey = first
+            changed = true
+        }
+        return changed
     }
 
     private func handlePublishError(_ error: ScheduleError, job: ScheduledJob, now: Date, nowString: String) async {
@@ -310,12 +371,15 @@ public struct ScheduleWorker: Sendable {
                 let post = updated.posts[index]
                 updated.posts[index] = PostPlan(
                     text: post.text,
+                    source: post.source,
+                    publishRkey: post.publishRkey,
                     facets: post.facets,
                     reply: post.reply,
                     embed: try embed.skejJSONValue(),
                     langs: post.langs,
                     labels: post.labels,
-                    tags: post.tags
+                    tags: post.tags,
+                    unknownFields: post.unknownFields
                 )
                 count += 1
             } catch {

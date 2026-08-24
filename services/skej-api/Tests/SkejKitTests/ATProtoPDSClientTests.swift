@@ -4,6 +4,93 @@ import Testing
 
 @Suite
 struct ATProtoPDSClientTests {
+    @Test func publishesThreadSequentiallyWithStableRkeysAndReplyChain() async throws {
+        let http = RecordingPublishHTTPClient()
+        let client = try await authenticatedClient(http: http)
+        var record = makeRecord()
+        let rkeys = ["3aaaaaaaaaaaa", "3aaaaaaaaaaab", "3aaaaaaaaaaac"]
+        record.publishRkey = rkeys[0]
+        record.posts = [
+            PostPlan(text: "First", publishRkey: rkeys[0]),
+            PostPlan(text: "Second", publishRkey: rkeys[1]),
+            PostPlan(text: "Third", publishRkey: rkeys[2]),
+        ]
+
+        let firstAttempt = try await client.publishThread(did: "did:plc:test", record: record)
+        let secondAttempt = try await client.publishThread(did: "did:plc:test", record: record)
+
+        #expect(firstAttempt.map(\.rkey) == rkeys)
+        #expect(secondAttempt.map(\.rkey) == rkeys)
+        let requests = await http.publishBodies()
+        #expect(requests.count == 6)
+        #expect(requests.compactMap { stringValue($0, path: ["rkey"]) } == rkeys + rkeys)
+        let firstURI = "at://did:plc:test/app.bsky.feed.post/\(rkeys[0])"
+        let secondURI = "at://did:plc:test/app.bsky.feed.post/\(rkeys[1])"
+        #expect(strongRefURI(requests[1], path: ["record", "reply", "root"]) == firstURI)
+        #expect(strongRefURI(requests[1], path: ["record", "reply", "parent"]) == firstURI)
+        #expect(strongRefURI(requests[2], path: ["record", "reply", "root"]) == firstURI)
+        #expect(strongRefURI(requests[2], path: ["record", "reply", "parent"]) == secondURI)
+    }
+
+    @Test func appliesExternalReplyToFirstPostThenChainsThread() async throws {
+        let http = RecordingPublishHTTPClient()
+        let client = try await authenticatedClient(http: http)
+        var record = makeRecord()
+        record.publishRkey = "3bbbbbbbbbbbb"
+        record.dependency = ScheduleDependency(
+            dependsOnScheduleUri: "at://did:plc:test/at.skej.schedule/parent",
+            relationship: .reply,
+            parentPublishedUri: "at://did:plc:other/app.bsky.feed.post/parent",
+            parentPublishedCid: "bafyparent"
+        )
+        record.posts = [
+            PostPlan(text: "External reply", publishRkey: "3bbbbbbbbbbbb"),
+            PostPlan(text: "Follow-up", publishRkey: "3bbbbbbbbbbbc"),
+        ]
+
+        _ = try await client.publishThread(did: "did:plc:test", record: record)
+
+        let requests = await http.publishBodies()
+        #expect(strongRefURI(requests[0], path: ["record", "reply", "root"]) == "at://did:plc:other/app.bsky.feed.post/parent")
+        #expect(strongRefCID(requests[0], path: ["record", "reply", "parent"]) == "bafyparent")
+        #expect(strongRefURI(requests[1], path: ["record", "reply", "root"]) == "at://did:plc:test/app.bsky.feed.post/3bbbbbbbbbbbb")
+    }
+
+    @Test func publishesQuoteAsRecordOrRecordWithMedia() async throws {
+        let http = RecordingPublishHTTPClient()
+        let client = try await authenticatedClient(http: http)
+        let dependency = ScheduleDependency(
+            dependsOnScheduleUri: "at://did:plc:test/at.skej.schedule/parent",
+            relationship: .quote,
+            parentPublishedUri: "at://did:plc:other/app.bsky.feed.post/parent",
+            parentPublishedCid: "bafyparent"
+        )
+        var plain = makeRecord()
+        plain.publishRkey = "3cccccccccccc"
+        plain.dependency = dependency
+        plain.posts = [PostPlan(text: "Quote", publishRkey: plain.publishRkey)]
+        var withMedia = makeRecord()
+        withMedia.publishRkey = "3dddddddddddd"
+        withMedia.dependency = dependency
+        withMedia.posts = [PostPlan(
+            text: "Quote with media",
+            publishRkey: withMedia.publishRkey,
+            embed: .object([
+                "$type": .string("app.bsky.embed.images"),
+                "images": .array([]),
+            ])
+        )]
+
+        _ = try await client.publishThread(did: "did:plc:test", record: plain)
+        _ = try await client.publishThread(did: "did:plc:test", record: withMedia)
+
+        let requests = await http.publishBodies()
+        #expect(stringValue(requests[0], path: ["record", "embed", "$type"]) == "app.bsky.embed.record")
+        #expect(stringValue(requests[1], path: ["record", "embed", "$type"]) == "app.bsky.embed.recordWithMedia")
+        #expect(stringValue(requests[1], path: ["record", "embed", "media", "$type"]) == "app.bsky.embed.images")
+        #expect(strongRefCID(requests[1], path: ["record", "embed", "record", "record"]) == "bafyparent")
+    }
+
     @Test func primesAndCachesDPoPNonceBeforeBlobUpload() async throws {
         let did = "did:plc:test"
         let pdsEndpoint = "https://pds.example.com"
@@ -174,6 +261,76 @@ struct ATProtoPDSClientTests {
 
         #expect(try await store.managedAccount(did: did)?.status == .active)
     }
+}
+
+private func authenticatedClient(http: any HTTPClient) async throws -> ATProtoPDSClient {
+    let did = "did:plc:test"
+    let store = try SQLiteStore(path: ":memory:")
+    try await store.migrate()
+    let token = ATProtoTokenPayload(
+        accessToken: "access-token",
+        refreshToken: nil,
+        tokenType: "DPoP",
+        expiresIn: 3_600,
+        scope: "atproto",
+        sub: did,
+        pdsEndpoint: "https://pds.example.com",
+        tokenEndpoint: "https://auth.example.com/token"
+    )
+    try await store.createOAuthSession(
+        OAuthSessionRecord(
+            did: did,
+            handle: "test.example.com",
+            tokenJSON: String(decoding: try JSONEncoder().encode(token), as: UTF8.self),
+            dpopKeyJSON: try DPoPKey().exportJSON()
+        ),
+        now: "2026-08-05T00:00:00Z"
+    )
+    return ATProtoPDSClient(store: store, http: http)
+}
+
+private actor RecordingPublishHTTPClient: HTTPClient {
+    private var bodies: [[String: JSONValue]] = []
+
+    func data(_ request: HTTPRequest) async throws -> HTTPResponseData {
+        guard request.url.hasSuffix("/xrpc/com.atproto.repo.putRecord"),
+              let body = request.body,
+              let raw = try? JSONDecoder().decode([String: JSONValue].self, from: body),
+              case let .string(rkey)? = raw["rkey"],
+              case let .string(repo)? = raw["repo"],
+              case let .string(collection)? = raw["collection"]
+        else {
+            throw HTTPClientError.invalidResponse
+        }
+        bodies.append(raw)
+        return HTTPResponseData(
+            body: Data(#"{"uri":"at://\#(repo)/\#(collection)/\#(rkey)","cid":"bafy\#(rkey)"}"#.utf8),
+            headers: [:],
+            statusCode: 200
+        )
+    }
+
+    func publishBodies() -> [[String: JSONValue]] { bodies }
+}
+
+private func value(_ object: [String: JSONValue], path: [String]) -> JSONValue? {
+    path.reduce(JSONValue.object(object) as JSONValue?) { partial, key in
+        guard case let .object(fields)? = partial else { return nil }
+        return fields[key]
+    }
+}
+
+private func stringValue(_ object: [String: JSONValue], path: [String]) -> String? {
+    guard case let .string(result)? = value(object, path: path) else { return nil }
+    return result
+}
+
+private func strongRefURI(_ object: [String: JSONValue], path: [String]) -> String? {
+    stringValue(object, path: path + ["uri"])
+}
+
+private func strongRefCID(_ object: [String: JSONValue], path: [String]) -> String? {
+    stringValue(object, path: path + ["cid"])
 }
 
 private struct UnreachableHTTPClient: HTTPClient {

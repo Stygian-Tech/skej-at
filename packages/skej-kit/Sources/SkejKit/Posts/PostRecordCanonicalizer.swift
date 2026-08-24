@@ -20,14 +20,24 @@ public enum PostRecordCanonicalizer {
     ]
 
     public static func canonicalize(_ plan: PostPlan) -> PostPlan {
-        PostPlan(
-            text: plan.text,
-            facets: facets(in: plan.text, preserving: plan.facets),
+        let compiled = plan.source.map { SocialMarkdownCompiler.compile($0.text) }
+        let text = compiled?.text ?? plan.text
+        return PostPlan(
+            text: text,
+            source: plan.source,
+            publishRkey: plan.publishRkey,
+            facets: facets(
+                in: text,
+                preserving: plan.facets,
+                including: compiled?.facets ?? [],
+                detectTextFacets: compiled == nil
+            ),
             reply: plan.reply,
             embed: normalizeEmbed(plan.embed),
             langs: plan.langs,
             labels: plan.labels,
-            tags: plan.tags
+            tags: plan.tags,
+            unknownFields: plan.unknownFields
         )
     }
 
@@ -91,25 +101,38 @@ public enum PostRecordCanonicalizer {
 
     public static func facets(
         in text: String,
-        preserving existingFacets: [JSONValue]? = nil
+        preserving existingFacets: [JSONValue]? = nil,
+        including authoredFacets: [JSONValue] = [],
+        detectTextFacets: Bool = true
     ) -> [JSONValue]? {
-        let links = detectedLinks(in: text)
+        let links = detectTextFacets ? detectedLinks(in: text) : []
         let linkRanges = links.map(\.range)
-        let tags = detectedTags(in: text).filter { tag in
+        let tags = (detectTextFacets ? detectedTags(in: text) : []).filter { tag in
             !linkRanges.contains { $0.overlaps(tag.range) }
         }
         let detectedRanges = linkRanges + tags.map(\.range)
         var preservedRanges: [Range<Int>] = []
         var facets: [JSONValue] = []
+        for facet in authoredFacets.sorted(by: {
+            (facetByteRange($0)?.lowerBound ?? Int.max) <
+                (facetByteRange($1)?.lowerBound ?? Int.max)
+        }) {
+            guard let range = facetByteRange(facet),
+                  isValidFacetRange(range, in: text),
+                  facetIsSafeAuthoredGeneratedFacet(facet),
+                  !detectedRanges.contains(where: { $0.overlaps(range) }),
+                  !preservedRanges.contains(where: { $0.overlaps(range) })
+            else { continue }
+            facets.append(facet)
+            preservedRanges.append(range)
+        }
         for facet in (existingFacets ?? []).sorted(by: {
             (facetByteRange($0)?.lowerBound ?? Int.max) <
                 (facetByteRange($1)?.lowerBound ?? Int.max)
         }) {
             guard let range = facetByteRange(facet),
-                  range.lowerBound >= 0,
-                  range.upperBound <= text.utf8.count,
-                  range.lowerBound < range.upperBound,
-                  !facetContainsGeneratedFeature(facet),
+                  isValidFacetRange(range, in: text),
+                  facetIsValidMention(facet, range: range, in: text),
                   !detectedRanges.contains(where: { $0.overlaps(range) }),
                   !preservedRanges.contains(where: { $0.overlaps(range) })
             else {
@@ -252,23 +275,73 @@ public enum PostRecordCanonicalizer {
         ])
     }
 
-    /// Link and tag facets are always regenerated from the text, so stale copies sent by
-    /// a client are dropped instead of preserved.
-    private static func facetContainsGeneratedFeature(_ facet: JSONValue) -> Bool {
+    private static func facetIsValidMention(
+        _ facet: JSONValue,
+        range: Range<Int>,
+        in text: String
+    ) -> Bool {
         guard case let .object(object) = facet,
               case let .array(features)? = object["features"]
         else {
             return false
         }
-        return features.contains { feature in
+        let utf8 = text.utf8
+        let start = utf8.index(utf8.startIndex, offsetBy: range.lowerBound)
+        let end = utf8.index(utf8.startIndex, offsetBy: range.upperBound)
+        guard let textStart = start.samePosition(in: text),
+              let textEnd = end.samePosition(in: text),
+              text[textStart..<textEnd].first == "@",
+              text.distance(from: textStart, to: textEnd) > 1
+        else { return false }
+        guard !features.isEmpty else { return false }
+        return features.allSatisfy { feature in
             guard case let .object(object) = feature,
                   case let .string(type)? = object["$type"]
             else {
                 return false
             }
-            return type == "app.bsky.richtext.facet#link" ||
-                type == "app.bsky.richtext.facet#tag"
+            guard type == "app.bsky.richtext.facet#mention",
+                  case let .string(did)? = object["did"]
+            else { return false }
+            return did.hasPrefix("did:") && did.count > 4
         }
+    }
+
+    private static func facetIsSafeAuthoredGeneratedFacet(_ facet: JSONValue) -> Bool {
+        guard case let .object(object) = facet,
+              case let .array(features)? = object["features"],
+              features.count == 1,
+              case let .object(feature) = features[0],
+              case let .string(type)? = feature["$type"]
+        else { return false }
+        if type == "app.bsky.richtext.facet#link",
+           case let .string(uri)? = feature["uri"] {
+            return isSafeHTTPURL(uri)
+        }
+        if type == "app.bsky.richtext.facet#tag",
+           case let .string(tag)? = feature["tag"] {
+            return !tag.isEmpty && tag.count <= maxTagLength
+        }
+        return false
+    }
+
+    private static func isSafeHTTPURL(_ value: String) -> Bool {
+        guard let components = URLComponents(string: value),
+              let scheme = components.scheme?.lowercased(),
+              scheme == "http" || scheme == "https",
+              components.host?.isEmpty == false
+        else { return false }
+        return true
+    }
+
+    private static func isValidFacetRange(_ range: Range<Int>, in text: String) -> Bool {
+        guard range.lowerBound >= 0,
+              range.lowerBound < range.upperBound,
+              range.upperBound <= text.utf8.count
+        else { return false }
+        let utf8 = text.utf8
+        return utf8.index(utf8.startIndex, offsetBy: range.lowerBound).samePosition(in: text) != nil &&
+            utf8.index(utf8.startIndex, offsetBy: range.upperBound).samePosition(in: text) != nil
     }
 
     private static func facetByteRange(_ facet: JSONValue) -> Range<Int>? {

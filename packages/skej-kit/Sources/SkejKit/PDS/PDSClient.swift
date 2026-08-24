@@ -13,7 +13,7 @@ public protocol PDSClient: Sendable {
         data: Data,
         mimeType: String
     ) async throws -> ATProtoBlobReference
-    func publishThread(did: String, record: SkejScheduleRecord) async throws -> PublishedPost
+    func publishThread(did: String, record: SkejScheduleRecord) async throws -> [PublishedPostReference]
     func getBrandProfile(did: String) async throws -> BrandProfile
     func updateBrandProfile(did: String, profile: UpdateBrandProfileRequest) async throws -> BrandProfile
 }
@@ -71,12 +71,8 @@ public struct SQLitePDSClient: PDSClient {
         )
     }
 
-    public func publishThread(did: String, record: SkejScheduleRecord) async throws -> PublishedPost {
-        let suffix = record.publishRkey
-        return PublishedPost(
-            uri: ATURI.published(did: did, recordType: record.recordType, publishRkey: suffix),
-            cid: "bafy\(suffix)"
-        )
+    public func publishThread(did: String, record: SkejScheduleRecord) async throws -> [PublishedPostReference] {
+        try publishedReferences(did: did, record: record)
     }
 
     public func getBrandProfile(did: String) async throws -> BrandProfile {
@@ -187,14 +183,11 @@ public actor InMemoryPDSClient: PDSClient {
         )
     }
 
-    public func publishThread(did: String, record: SkejScheduleRecord) async throws -> PublishedPost {
+    public func publishThread(did: String, record: SkejScheduleRecord) async throws -> [PublishedPostReference] {
         if shouldFailPublish {
             throw PDSClientError.publishFailed("PDS rejected scheduled record")
         }
-        return PublishedPost(
-            uri: ATURI.published(did: did, recordType: record.recordType, publishRkey: record.publishRkey),
-            cid: "bafy\(record.publishRkey)"
-        )
+        return try publishedReferences(did: did, record: record)
     }
 
     public func getBrandProfile(did: String) async throws -> BrandProfile {
@@ -212,6 +205,34 @@ public actor InMemoryPDSClient: PDSClient {
         )
         profiles[did] = updated
         return updated
+    }
+}
+
+private func publishedReferences(
+    did: String,
+    record: SkejScheduleRecord
+) throws -> [PublishedPostReference] {
+    if record.shadowRecord != nil {
+        return [PublishedPostReference(
+            rkey: record.publishRkey,
+            uri: ATURI.published(did: did, recordType: record.recordType, publishRkey: record.publishRkey),
+            cid: "bafy\(record.publishRkey)"
+        )]
+    }
+    guard !record.posts.isEmpty else {
+        throw PDSClientError.publishFailed("No record payload to publish")
+    }
+    return try record.posts.enumerated().map { index, post in
+        guard let rkey = post.publishRkey ?? (index == 0 ? record.publishRkey : nil),
+              !rkey.isEmpty
+        else {
+            throw PDSClientError.publishFailed("Post \(index + 1) has no stable publish rkey")
+        }
+        return PublishedPostReference(
+            rkey: rkey,
+            uri: ATURI.published(did: did, recordType: record.recordType, publishRkey: rkey),
+            cid: "bafy\(rkey)"
+        )
     }
 }
 

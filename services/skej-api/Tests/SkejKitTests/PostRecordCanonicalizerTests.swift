@@ -4,6 +4,45 @@ import Testing
 
 @Suite
 struct PostRecordCanonicalizerTests {
+    @Test func markdownSourceAuthoritativelyRebuildsProjectionAndLabeledLinkFacet() {
+        let staleLink: JSONValue = .object([
+            "index": .object(["byteStart": .number(0), "byteEnd": .number(4)]),
+            "features": .array([.object([
+                "$type": .string("app.bsky.richtext.facet#link"),
+                "uri": .string("https://stale.invalid"),
+            ])]),
+        ])
+
+        let canonical = PostRecordCanonicalizer.canonicalize(PostPlan(
+            text: "stale projection",
+            source: PostSource(format: .markdown, text: "👋 [Skej](https://skej.at)"),
+            publishRkey: "3aaaaaaaaaaaa",
+            facets: [staleLink],
+            unknownFields: ["future": .string("preserved")]
+        ))
+
+        #expect(canonical.text == "👋 Skej")
+        #expect(canonical.source?.text == "👋 [Skej](https://skej.at)")
+        #expect(canonical.publishRkey == "3aaaaaaaaaaaa")
+        #expect(canonical.unknownFields["future"] == .string("preserved"))
+        #expect(canonical.facets?.count == 1)
+        #expect(byteRange(canonical.facets?.first) == 5..<9)
+        #expect(linkURI(canonical.facets?.first) == "https://skej.at")
+    }
+
+    @Test func markdownExcludedBlocksDoNotRegainAutomaticFacetsDuringCanonicalization() {
+        let canonical = PostRecordCanonicalizer.canonicalize(PostPlan(
+            text: "stale",
+            source: PostSource(
+                format: .markdown,
+                text: "# Literal https://example.com #heading\n```\nhttps://inside.example #code\n```"
+            )
+        ))
+
+        #expect(canonical.text.contains("https://example.com"))
+        #expect(canonical.facets == nil)
+    }
+
     @Test func detectsMultipleURLsWithUTF8ByteOffsetsAndPunctuation() throws {
         let text = "👋 https://example.com, then (https://bsky.app)."
         let facets = PostRecordCanonicalizer.facets(in: text)
@@ -72,6 +111,23 @@ struct PostRecordCanonicalizerTests {
 
         #expect(facets?.count == 1)
         #expect(linkURI(facets?[0]) == "https://example.com")
+    }
+
+    @Test func dropsStaleMentionFacetsThatNoLongerCoverAMention() {
+        let staleMention: JSONValue = .object([
+            "index": .object([
+                "byteStart": .number(0),
+                "byteEnd": .number(4),
+            ]),
+            "features": .array([
+                .object([
+                    "$type": .string("app.bsky.richtext.facet#mention"),
+                    "did": .string("did:plc:test"),
+                ]),
+            ]),
+        ])
+
+        #expect(PostRecordCanonicalizer.facets(in: "Skej", preserving: [staleMention]) == nil)
     }
 
     @Test func detectsTagsWithUTF8ByteOffsetsAndTrailingPunctuation() {
