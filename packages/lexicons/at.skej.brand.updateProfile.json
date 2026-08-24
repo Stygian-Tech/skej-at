@@ -1,0 +1,61 @@
+{
+  "lexicon": 1,
+  "id": "at.skej.brand.updateProfile",
+  "defs": {
+    "main": {
+      "type": "procedure",
+      "input": {
+        "encoding": "application/json",
+        "schema": {
+          "type": "object",
+          "required": [
+            "did"
+          ],
+          "properties": {
+            "did": {
+              "type": "string",
+              "format": "did"
+            },
+            "displayName": {
+              "type": "string",
+              "maxGraphemes": 640
+            },
+            "description": {
+              "type": "string",
+              "maxGraphemes": 2560
+            },
+            "avatar": {
+              "type": "string",
+              "format": "uri"
+            }
+          }
+        }
+      },
+      "output": {
+        "encoding": "application/json",
+        "schema": {
+          "type": "ref",
+          "ref": "at.skej.defs#brandProfile"
+        }
+      },
+      "errors": [
+        {
+          "name": "AuthRequired"
+        },
+        {
+          "name": "InvalidRequest"
+        },
+        {
+          "name": "Forbidden"
+        },
+        {
+          "name": "NotFound"
+        },
+        {
+          "name": "AccountNeedsReauth"
+        }
+      ],
+      "description": "Procedure contract for at.skej.brand.updateProfile."
+    }
+  }
+}

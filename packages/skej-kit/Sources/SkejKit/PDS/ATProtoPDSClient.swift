@@ -519,7 +519,7 @@ private struct UploadBlobResponse: Codable {
     let blob: ATProtoBlobReference
 }
 
-private extension JSONEncoder {
+public extension JSONEncoder {
     func encodeString<T: Encodable>(_ value: T) throws -> String {
         guard let string = String(data: try encode(value), encoding: .utf8) else {
             throw PDSClientError.publishFailed("Could not encode JSON string")

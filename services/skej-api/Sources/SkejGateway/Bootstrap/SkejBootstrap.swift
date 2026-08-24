@@ -1,6 +1,7 @@
 import Foundation
 import Hummingbird
 import Logging
+import SkejKit
 
 public enum SkejBootstrap {
     public static func run(config: AppConfig, services: SkejServices, logger: Logger) async throws {
@@ -29,4 +30,3 @@ public enum SkejBootstrap {
         }
     }
 }
-

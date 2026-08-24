@@ -4,7 +4,7 @@
   "private": true,
   "type": "module",
   "exports": {
-    "./at.skej.schedule.json": "./at.skej.schedule.json"
+    "./*.json": "./*.json"
   },
   "scripts": {
     "build": "bun test",
@@ -16,4 +16,3 @@
     "@types/bun": "^1.3.4"
   }
 }
-

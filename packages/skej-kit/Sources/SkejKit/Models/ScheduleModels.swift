@@ -258,6 +258,7 @@ public struct SkejScheduleRecord: Codable, Equatable, Sendable {
     public var lastError: ScheduleError?
     public var dependency: ScheduleDependency?
     public var posts: [PostPlan]
+    public var unknownFields: [String: JSONValue]
 
     public var scheduledFor: String {
         get { scheduledAt }
@@ -289,7 +290,8 @@ public struct SkejScheduleRecord: Codable, Equatable, Sendable {
         retry: RetryState = RetryState(),
         lastError: ScheduleError? = nil,
         dependency: ScheduleDependency? = nil,
-        posts: [PostPlan]
+        posts: [PostPlan],
+        unknownFields: [String: JSONValue] = [:]
     ) {
         self.type = type
         self.scheduledAt = scheduledAt
@@ -312,6 +314,7 @@ public struct SkejScheduleRecord: Codable, Equatable, Sendable {
         self.lastError = lastError
         self.dependency = dependency
         self.posts = posts
+        self.unknownFields = unknownFields
     }
 
     public init(
@@ -359,9 +362,20 @@ public struct SkejScheduleRecord: Codable, Equatable, Sendable {
         self.lastError = try container.decodeIfPresent(ScheduleError.self, forKey: .lastError)
         self.dependency = try container.decodeIfPresent(ScheduleDependency.self, forKey: .dependency)
         self.posts = try container.decodeIfPresent([PostPlan].self, forKey: .posts) ?? []
+
+        let dynamic = try decoder.container(keyedBy: DynamicCodingKey.self)
+        let knownKeys = Set(CodingKeys.allCases.map(\.rawValue))
+        self.unknownFields = try dynamic.allKeys.reduce(into: [:]) { fields, key in
+            guard !knownKeys.contains(key.stringValue) else { return }
+            fields[key.stringValue] = try dynamic.decode(JSONValue.self, forKey: key)
+        }
     }
 
     public func encode(to encoder: Encoder) throws {
+        var dynamic = encoder.container(keyedBy: DynamicCodingKey.self)
+        for (key, value) in unknownFields {
+            try dynamic.encode(value, forKey: DynamicCodingKey(key))
+        }
         var container = encoder.container(keyedBy: CodingKeys.self)
         try container.encode(type, forKey: .type)
         try container.encode(scheduledAt, forKey: .scheduledAt)
@@ -386,7 +400,7 @@ public struct SkejScheduleRecord: Codable, Equatable, Sendable {
         try container.encode(posts, forKey: .posts)
     }
 
-    enum CodingKeys: String, CodingKey {
+    enum CodingKeys: String, CodingKey, CaseIterable {
         case type = "$type"
         case scheduledAt
         case title
@@ -409,6 +423,23 @@ public struct SkejScheduleRecord: Codable, Equatable, Sendable {
         case lastError
         case dependency
         case posts
+    }
+}
+
+private struct DynamicCodingKey: CodingKey {
+    let stringValue: String
+    let intValue: Int? = nil
+
+    init(_ stringValue: String) {
+        self.stringValue = stringValue
+    }
+
+    init?(stringValue: String) {
+        self.init(stringValue)
+    }
+
+    init?(intValue: Int) {
+        return nil
     }
 }
 
@@ -640,6 +671,16 @@ public struct ManagedAccount: Codable, Equatable, Sendable {
     public var pdsEndpoint: String?
     public var status: ManagedAccountStatus
     public var isDefault: Bool
+
+    public init(did: String, handle: String? = nil, displayName: String? = nil, avatar: String? = nil, pdsEndpoint: String? = nil, status: ManagedAccountStatus = .active, isDefault: Bool = false) {
+        self.did = did
+        self.handle = handle
+        self.displayName = displayName
+        self.avatar = avatar
+        self.pdsEndpoint = pdsEndpoint
+        self.status = status
+        self.isDefault = isDefault
+    }
 }
 
 public enum ManagedAccountStatus: String, Codable, Sendable {
@@ -739,36 +780,70 @@ public struct ScheduledPostSummary: Codable, Equatable, Sendable {
     public let publishedCid: String?
 
     public var scheduledFor: String { scheduledAt }
+
+    public init(rkey: String, did: String, scheduleUri: String, scheduledAt: String, status: ScheduleStatus, record: SkejScheduleRecord, attempts: Int, lastError: ScheduleError? = nil, nextAttemptAt: String? = nil, publishedUri: String? = nil, publishedCid: String? = nil) {
+        self.rkey = rkey
+        self.did = did
+        self.scheduleUri = scheduleUri
+        self.scheduledAt = scheduledAt
+        self.status = status
+        self.record = record
+        self.attempts = attempts
+        self.lastError = lastError
+        self.nextAttemptAt = nextAttemptAt
+        self.publishedUri = publishedUri
+        self.publishedCid = publishedCid
+    }
 }
 
 public struct TeamSummary: Codable, Equatable, Sendable {
     public let rkey: String
     public let uri: String
     public var record: SkejTeamRecord
+
+    public init(rkey: String, uri: String, record: SkejTeamRecord) {
+        self.rkey = rkey; self.uri = uri; self.record = record
+    }
 }
 
 public struct TeamMemberSummary: Codable, Equatable, Sendable {
     public let rkey: String
     public let uri: String
     public let record: TeamMemberRecord
+
+    public init(rkey: String, uri: String, record: TeamMemberRecord) {
+        self.rkey = rkey; self.uri = uri; self.record = record
+    }
 }
 
 public struct TeamGroupSummary: Codable, Equatable, Sendable {
     public let rkey: String
     public let uri: String
     public let record: TeamGroupRecord
+
+    public init(rkey: String, uri: String, record: TeamGroupRecord) {
+        self.rkey = rkey; self.uri = uri; self.record = record
+    }
 }
 
 public struct BrandGrantSummary: Codable, Equatable, Sendable {
     public let rkey: String
     public let uri: String
     public let record: BrandGrantRecord
+
+    public init(rkey: String, uri: String, record: BrandGrantRecord) {
+        self.rkey = rkey; self.uri = uri; self.record = record
+    }
 }
 
 public struct BrandSummary: Codable, Equatable, Sendable {
     public let rkey: String
     public let uri: String
     public let record: SkejBrandRecord
+
+    public init(rkey: String, uri: String, record: SkejBrandRecord) {
+        self.rkey = rkey; self.uri = uri; self.record = record
+    }
 }
 
 public struct EffectiveBrandPermission: Codable, Equatable, Sendable {
@@ -924,34 +999,42 @@ public struct UpdateBrandProfileRequest: Codable, Sendable {
 
 public struct ListSchedulesResponse: Codable, Sendable {
     public let records: [ScheduledPostSummary]
+    public init(records: [ScheduledPostSummary]) { self.records = records }
 }
 
 public struct ListTeamsResponse: Codable, Sendable {
     public let teams: [TeamSummary]
+    public init(teams: [TeamSummary]) { self.teams = teams }
 }
 
 public struct ListMembersResponse: Codable, Sendable {
     public let members: [TeamMemberSummary]
+    public init(members: [TeamMemberSummary]) { self.members = members }
 }
 
 public struct ListGroupsResponse: Codable, Sendable {
     public let groups: [TeamGroupSummary]
+    public init(groups: [TeamGroupSummary]) { self.groups = groups }
 }
 
 public struct ListBrandGrantsResponse: Codable, Sendable {
     public let grants: [BrandGrantSummary]
+    public init(grants: [BrandGrantSummary]) { self.grants = grants }
 }
 
 public struct ListBrandsResponse: Codable, Sendable {
     public let brands: [BrandSummary]
+    public init(brands: [BrandSummary]) { self.brands = brands }
 }
 
 public struct ListAccountsResponse: Codable, Sendable {
     public let accounts: [ManagedAccount]
+    public init(accounts: [ManagedAccount]) { self.accounts = accounts }
 }
 
 public struct ListAuditEventsResponse: Codable, Sendable {
     public let events: [AuditEvent]
+    public init(events: [AuditEvent]) { self.events = events }
 }
 
 public struct OKResponse: Codable, Sendable {

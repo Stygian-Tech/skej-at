@@ -1,4 +1,5 @@
 import Foundation
+import SkejKit
 
 public struct SkejServices: Sendable {
     public let config: AppConfig

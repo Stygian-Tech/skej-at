@@ -2,11 +2,60 @@ import Foundation
 import Hummingbird
 import HummingbirdTesting
 import HTTPTypes
+import SkejGateway
 import SkejKit
 import Testing
 
 @Suite
 struct RouterTests {
+    @Test func xrpcCreatesAndListsSchedulesWithCanonicalVerbs() async throws {
+        let services = try await makeTestServices()
+        let app = Application(router: buildRouter(services: services))
+
+        try await app.test(.router) { client in
+            let created: ScheduledPostSummary = try await postJSON(
+                client: client,
+                uri: "/xrpc/\(SkejXRPCMethod.createSchedule.nsid)",
+                headers: didHeaders("did:plc:test"),
+                body: SkejCreateScheduleInput(record: makeRecord())
+            )
+            #expect(created.did == "did:plc:test")
+
+            try await client.execute(
+                uri: "/xrpc/\(SkejXRPCMethod.listSchedules.nsid)",
+                method: .get,
+                headers: didHeaders("did:plc:test")
+            ) { response in
+                #expect(response.status == .ok)
+                let output = try JSONDecoder().decode(ListSchedulesResponse.self, from: Data(buffer: response.body))
+                #expect(output.records.map(\.rkey) == [created.rkey])
+            }
+        }
+    }
+
+    @Test func xrpcNormalizesUnknownMethodsAndWrongVerbs() async throws {
+        let services = try await makeTestServices()
+        let app = Application(router: buildRouter(services: services))
+
+        try await app.test(.router) { client in
+            try await client.execute(uri: "/xrpc/at.skej.unknown.method", method: .get) { response in
+                #expect(response.status == .notFound)
+                let error = try JSONDecoder().decode(ErrorBody.self, from: Data(buffer: response.body))
+                #expect(error.error == "XrpcNotSupported")
+            }
+            try await client.execute(
+                uri: "/xrpc/\(SkejXRPCMethod.listSchedules.nsid)",
+                method: .post,
+                headers: didHeaders("did:plc:test"),
+                body: try encodedBody(SkejEmptyInput())
+            ) { response in
+                #expect(response.status == .methodNotAllowed)
+                let error = try JSONDecoder().decode(ErrorBody.self, from: Data(buffer: response.body))
+                #expect(error.error == "InvalidRequest")
+            }
+        }
+    }
+
     @Test func healthReturnsOK() async throws {
         let services = try await makeTestServices()
         let app = Application(router: buildRouter(services: services))
@@ -461,10 +510,12 @@ private func executeJSON<RequestBody: Encodable, ResponseBody: Decodable>(
     body: RequestBody
 ) async throws -> ResponseBody {
     var decoded: ResponseBody?
+    var requestHeaders = headers
+    requestHeaders[.contentType] = "application/json"
     try await client.execute(
         uri: uri,
         method: method,
-        headers: headers,
+        headers: requestHeaders,
         body: try encodedBody(body)
     ) { response in
         #expect(response.status == .ok || response.status == .created)

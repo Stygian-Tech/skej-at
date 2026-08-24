@@ -21,7 +21,8 @@ describe("api client", () => {
   });
 
   it("posts a schedule record", async () => {
-    const fetchMock = mock(async (_input: RequestInfo | URL, init?: RequestInit) => {
+    const fetchMock = mock(async (input: RequestInfo | URL, init?: RequestInit) => {
+      expect(String(input)).toBe("/xrpc/at.skej.schedule.create");
       expect(init?.method).toBe("POST");
       expect(JSON.parse(String(init?.body)).record.$type).toBe("at.skej.schedule");
       return new Response(
@@ -67,11 +68,12 @@ describe("api client", () => {
     const controller = new AbortController();
     const fetchMock = mock(async (input: RequestInfo | URL, init?: RequestInit) => {
       expect(String(input)).toBe(
-        "/v1/accounts/did:plc:test/link-preview"
+        "/xrpc/at.skej.preview.createLink"
       );
       expect(init?.method).toBe("POST");
       expect(init?.signal).toBe(controller.signal);
       expect(JSON.parse(String(init?.body))).toEqual({
+        accountDid: "did:plc:test",
         url: "https://example.com/article",
       });
       return new Response(

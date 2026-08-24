@@ -10,6 +10,37 @@ const permissionLexicons = [
   "at.skej.team.brandGrant",
   "at.skej.brand",
 ];
+const xrpcLexicons = [
+  "at.skej.actor.getSession",
+  "at.skej.auth.logout",
+  "at.skej.account.list",
+  "at.skej.team.list",
+  "at.skej.team.get",
+  "at.skej.team.create",
+  "at.skej.team.update",
+  "at.skej.team.transferOwner",
+  "at.skej.team.listMembers",
+  "at.skej.team.putMember",
+  "at.skej.team.listGroups",
+  "at.skej.team.putGroup",
+  "at.skej.team.listBrandGrants",
+  "at.skej.team.putBrandGrant",
+  "at.skej.team.listBrands",
+  "at.skej.team.putBrand",
+  "at.skej.brand.getProfile",
+  "at.skej.brand.updateProfile",
+  "at.skej.schedule.list",
+  "at.skej.schedule.create",
+  "at.skej.schedule.update",
+  "at.skej.schedule.cancel",
+  "at.skej.schedule.retry",
+  "at.skej.schedule.duplicate",
+  "at.skej.schedule.publishNow",
+  "at.skej.schedule.recordView",
+  "at.skej.preview.createLink",
+  "at.skej.audit.list",
+  "at.skej.dev.seed",
+] as const;
 
 describe("at.skej.schedule lexicon", () => {
   it("parses as a v1 lexicon", () => {
@@ -114,4 +145,37 @@ describe("Skej permission lexicons", () => {
       "manage",
     ]);
   });
+});
+
+describe("Skej XRPC lexicons", () => {
+  for (const id of xrpcLexicons) {
+    it(`${id} declares a query or procedure contract`, () => {
+      const schema = JSON.parse(
+        readFileSync(join(import.meta.dir, "..", `${id}.json`), "utf8")
+      ) as {
+        lexicon?: number;
+        id?: string;
+        defs?: {
+          main?: {
+            type?: string;
+            output?: { encoding?: string; schema?: unknown };
+            input?: { encoding?: string; schema?: unknown };
+            parameters?: unknown;
+          };
+        };
+      };
+
+      expect(schema.lexicon).toBe(1);
+      expect(schema.id).toBe(id);
+      expect(["query", "procedure"]).toContain(schema.defs?.main?.type);
+      expect(schema.defs?.main?.output?.encoding).toBe("application/json");
+      expect(schema.defs?.main?.output?.schema).toBeTruthy();
+      if (schema.defs?.main?.type === "query") {
+        expect(schema.defs.main.parameters).toBeTruthy();
+      } else {
+        expect(schema.defs?.main?.input?.encoding).toBe("application/json");
+        expect(schema.defs?.main?.input?.schema).toBeTruthy();
+      }
+    });
+  }
 });

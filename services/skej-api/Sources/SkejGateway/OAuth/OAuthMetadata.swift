@@ -1,4 +1,5 @@
 import Foundation
+import SkejKit
 
 public enum OAuthMetadata {
     public static func webClientMetadata(publicOrigin: String, redirectOrigin: String? = nil) -> [String: JSONValue] {

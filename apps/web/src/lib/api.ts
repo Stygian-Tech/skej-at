@@ -17,8 +17,49 @@ import {
   Viewer,
 } from "@/lib/skejTypes";
 
-function didPath(did: string): string {
-  return did;
+const XRPC = {
+  getSession: "at.skej.actor.getSession",
+  logout: "at.skej.auth.logout",
+  listAccounts: "at.skej.account.list",
+  listTeams: "at.skej.team.list",
+  createTeam: "at.skej.team.create",
+  listMembers: "at.skej.team.listMembers",
+  putMember: "at.skej.team.putMember",
+  listGroups: "at.skej.team.listGroups",
+  putGroup: "at.skej.team.putGroup",
+  listBrandGrants: "at.skej.team.listBrandGrants",
+  putBrandGrant: "at.skej.team.putBrandGrant",
+  listBrands: "at.skej.team.listBrands",
+  putBrand: "at.skej.team.putBrand",
+  getBrandProfile: "at.skej.brand.getProfile",
+  updateBrandProfile: "at.skej.brand.updateProfile",
+  listSchedules: "at.skej.schedule.list",
+  createSchedule: "at.skej.schedule.create",
+  updateSchedule: "at.skej.schedule.update",
+  cancelSchedule: "at.skej.schedule.cancel",
+  retrySchedule: "at.skej.schedule.retry",
+  duplicateSchedule: "at.skej.schedule.duplicate",
+  publishNow: "at.skej.schedule.publishNow",
+  recordView: "at.skej.schedule.recordView",
+  createLinkPreview: "at.skej.preview.createLink",
+  listAuditEvents: "at.skej.audit.list",
+} as const;
+
+function xrpcQuery(nsid: string, parameters: Record<string, string | undefined> = {}): string {
+  const query = new URLSearchParams();
+  for (const [name, value] of Object.entries(parameters)) {
+    if (value !== undefined) query.set(name, value);
+  }
+  const suffix = query.size > 0 ? `?${query.toString()}` : "";
+  return `/xrpc/${nsid}${suffix}`;
+}
+
+function xrpcProcedure<T>(nsid: string, input: unknown, signal?: AbortSignal): Promise<T> {
+  return requestJSON<T>(`/xrpc/${nsid}`, {
+    method: "POST",
+    body: JSON.stringify(input),
+    signal,
+  });
 }
 
 /** Carries the API's error code so callers can branch on it, not on copy. */
@@ -69,40 +110,39 @@ export function startOAuth(handle: string): string {
 }
 
 export async function getViewer(): Promise<Viewer> {
-  return requestJSON<Viewer>("/v1/me");
+  return requestJSON<Viewer>(xrpcQuery(XRPC.getSession));
 }
 
 export async function logout(): Promise<void> {
-  await requestJSON<{ ok: boolean }>("/v1/logout", {
-    method: "POST",
-  });
+  await xrpcProcedure<{ ok: boolean }>(XRPC.logout, {});
 }
 
 export async function listSchedules(): Promise<ScheduledPostSummary[]> {
-  const body = await requestJSON<{ records: ScheduledPostSummary[] }>("/v1/schedules");
+  const body = await requestJSON<{ records: ScheduledPostSummary[] }>(
+    xrpcQuery(XRPC.listSchedules)
+  );
   return body.records;
 }
 
 export async function listAccounts(): Promise<ManagedAccount[]> {
-  const body = await requestJSON<{ accounts: ManagedAccount[] }>("/v1/accounts");
+  const body = await requestJSON<{ accounts: ManagedAccount[] }>(
+    xrpcQuery(XRPC.listAccounts)
+  );
   return body.accounts;
 }
 
 export async function listTeams(): Promise<TeamSummary[]> {
-  const body = await requestJSON<{ teams: TeamSummary[] }>("/v1/teams");
+  const body = await requestJSON<{ teams: TeamSummary[] }>(xrpcQuery(XRPC.listTeams));
   return body.teams;
 }
 
 export async function createTeam(title: string): Promise<TeamSummary> {
-  return requestJSON<TeamSummary>("/v1/teams", {
-    method: "POST",
-    body: JSON.stringify({ title }),
-  });
+  return xrpcProcedure<TeamSummary>(XRPC.createTeam, { title });
 }
 
 export async function listTeamMembers(teamRkey: string): Promise<TeamMemberSummary[]> {
   const body = await requestJSON<{ members: TeamMemberSummary[] }>(
-    `/v1/teams/${encodeURIComponent(teamRkey)}/members`
+    xrpcQuery(XRPC.listMembers, { teamRkey })
   );
   return body.members;
 }
@@ -112,18 +152,18 @@ export async function addTeamMember(
   memberDid: string,
   role: TeamRole
 ): Promise<TeamMemberSummary> {
-  return requestJSON<TeamMemberSummary>(
-    `/v1/teams/${encodeURIComponent(teamRkey)}/members`,
-    {
-      method: "POST",
-      body: JSON.stringify({ memberDid, role, status: "active", groupUris: [] }),
-    }
-  );
+  return xrpcProcedure<TeamMemberSummary>(XRPC.putMember, {
+    teamRkey,
+    memberDid,
+    role,
+    status: "active",
+    groupUris: [],
+  });
 }
 
 export async function listTeamGroups(teamRkey: string): Promise<TeamGroupSummary[]> {
   const body = await requestJSON<{ groups: TeamGroupSummary[] }>(
-    `/v1/teams/${encodeURIComponent(teamRkey)}/groups`
+    xrpcQuery(XRPC.listGroups, { teamRkey })
   );
   return body.groups;
 }
@@ -133,18 +173,17 @@ export async function createTeamGroup(
   name: string,
   memberDids: string[] = []
 ): Promise<TeamGroupSummary> {
-  return requestJSON<TeamGroupSummary>(
-    `/v1/teams/${encodeURIComponent(teamRkey)}/groups`,
-    {
-      method: "POST",
-      body: JSON.stringify({ name, memberDids, brandGrantUris: [] }),
-    }
-  );
+  return xrpcProcedure<TeamGroupSummary>(XRPC.putGroup, {
+    teamRkey,
+    name,
+    memberDids,
+    brandGrantUris: [],
+  });
 }
 
 export async function listBrandGrants(teamRkey: string): Promise<BrandGrantSummary[]> {
   const body = await requestJSON<{ grants: BrandGrantSummary[] }>(
-    `/v1/teams/${encodeURIComponent(teamRkey)}/brand-grants`
+    xrpcQuery(XRPC.listBrandGrants, { teamRkey })
   );
   return body.grants;
 }
@@ -158,18 +197,12 @@ export async function createBrandGrant(
     capabilities: BrandCapability[];
   }
 ): Promise<BrandGrantSummary> {
-  return requestJSON<BrandGrantSummary>(
-    `/v1/teams/${encodeURIComponent(teamRkey)}/brand-grants`,
-    {
-      method: "POST",
-      body: JSON.stringify(grant),
-    }
-  );
+  return xrpcProcedure<BrandGrantSummary>(XRPC.putBrandGrant, { teamRkey, ...grant });
 }
 
 export async function listBrands(teamRkey: string): Promise<BrandSummary[]> {
   const body = await requestJSON<{ brands: BrandSummary[] }>(
-    `/v1/teams/${encodeURIComponent(teamRkey)}/brands`
+    xrpcQuery(XRPC.listBrands, { teamRkey })
   );
   return body.brands;
 }
@@ -178,47 +211,42 @@ export async function designateBrand(
   teamRkey: string,
   brandDid: string
 ): Promise<BrandSummary> {
-  return requestJSON<BrandSummary>(`/v1/teams/${encodeURIComponent(teamRkey)}/brands`, {
-    method: "POST",
-    body: JSON.stringify({ brandDid, status: "active" }),
+  return xrpcProcedure<BrandSummary>(XRPC.putBrand, {
+    teamRkey,
+    brandDid,
+    status: "active",
   });
 }
 
 export async function getBrandProfile(did: string): Promise<BrandProfile> {
-  return requestJSON<BrandProfile>(`/v1/brands/${didPath(did)}/profile`);
+  return requestJSON<BrandProfile>(xrpcQuery(XRPC.getBrandProfile, { did }));
 }
 
 export async function updateBrandProfile(
   did: string,
   profile: Pick<BrandProfile, "displayName" | "description" | "avatar">
 ): Promise<BrandProfile> {
-  return requestJSON<BrandProfile>(`/v1/brands/${didPath(did)}/profile`, {
-    method: "PATCH",
-    body: JSON.stringify(profile),
-  });
+  return xrpcProcedure<BrandProfile>(XRPC.updateBrandProfile, { did, ...profile });
 }
 
 export async function listAccountSchedules(
   did: string
 ): Promise<ScheduledPostSummary[]> {
   const body = await requestJSON<{ records: ScheduledPostSummary[] }>(
-    `/v1/accounts/${didPath(did)}/schedules`
+    xrpcQuery(XRPC.listSchedules, { accountDid: did })
   );
   return body.records;
 }
 
 export async function listAuditEvents(did: string): Promise<AuditEvent[]> {
   const body = await requestJSON<{ events: AuditEvent[] }>(
-    `/v1/accounts/${didPath(did)}/audit`
+    xrpcQuery(XRPC.listAuditEvents, { accountDid: did })
   );
   return body.events;
 }
 
 export async function recordScheduleView(did: string, rkey: string): Promise<void> {
-  await requestJSON<{ ok: boolean }>(
-    `/v1/accounts/${didPath(did)}/schedules/${encodeURIComponent(rkey)}/view`,
-    { method: "POST" }
-  );
+  await xrpcProcedure<{ ok: boolean }>(XRPC.recordView, { accountDid: did, rkey });
 }
 
 export async function hydrateLinkPreview(
@@ -226,11 +254,11 @@ export async function hydrateLinkPreview(
   url: string,
   signal?: AbortSignal
 ): Promise<ExternalEmbed> {
-  return requestJSON<ExternalEmbed>(`/v1/accounts/${didPath(did)}/link-preview`, {
-    method: "POST",
-    body: JSON.stringify({ url }),
-    signal,
-  });
+  return xrpcProcedure<ExternalEmbed>(
+    XRPC.createLinkPreview,
+    { accountDid: did, url },
+    signal
+  );
 }
 
 export async function createSchedule(
@@ -240,12 +268,9 @@ export async function createSchedule(
 ): Promise<ScheduledPostSummary> {
   const record = buildScheduleRecord(draft);
   if (status) record.status = status;
-  const path = did
-    ? `/v1/accounts/${didPath(did)}/schedules`
-    : "/v1/schedules";
-  return requestJSON<ScheduledPostSummary>(path, {
-    method: "POST",
-    body: JSON.stringify({ record }),
+  return xrpcProcedure<ScheduledPostSummary>(XRPC.createSchedule, {
+    accountDid: did,
+    record,
   });
 }
 
@@ -257,62 +282,53 @@ export async function updateSchedule(
 ): Promise<ScheduledPostSummary> {
   const record = buildScheduleRecord(draft);
   if (status) record.status = status;
-  const path = did
-    ? `/v1/accounts/${didPath(did)}/schedules/${encodeURIComponent(rkey)}`
-    : `/v1/schedules/${encodeURIComponent(rkey)}`;
-  return requestJSON<ScheduledPostSummary>(path, {
-    method: "PATCH",
-    body: JSON.stringify({ record }),
+  return xrpcProcedure<ScheduledPostSummary>(XRPC.updateSchedule, {
+    accountDid: did,
+    rkey,
+    record,
   });
 }
 
 export async function deleteSchedule(rkey: string): Promise<void> {
-  await requestJSON<{ ok: boolean }>(`/v1/schedules/${encodeURIComponent(rkey)}`, {
-    method: "DELETE",
-  });
+  await xrpcProcedure<ScheduledPostSummary>(XRPC.cancelSchedule, { rkey });
 }
 
 export async function cancelSchedule(
   did: string,
   rkey: string
 ): Promise<ScheduledPostSummary> {
-  return requestJSON<ScheduledPostSummary>(
-    `/v1/accounts/${didPath(did)}/schedules/${encodeURIComponent(rkey)}/cancel`,
-    { method: "POST" }
-  );
+  return xrpcProcedure<ScheduledPostSummary>(XRPC.cancelSchedule, {
+    accountDid: did,
+    rkey,
+  });
 }
 
 export async function retrySchedule(
   did: string,
   rkey: string
 ): Promise<ScheduledPostSummary> {
-  return requestJSON<ScheduledPostSummary>(
-    `/v1/accounts/${didPath(did)}/schedules/${encodeURIComponent(rkey)}/retry`,
-    { method: "POST" }
-  );
+  return xrpcProcedure<ScheduledPostSummary>(XRPC.retrySchedule, {
+    accountDid: did,
+    rkey,
+  });
 }
 
 export async function duplicateSchedule(
   did: string,
   rkey: string
 ): Promise<ScheduledPostSummary> {
-  return requestJSON<ScheduledPostSummary>(
-    `/v1/accounts/${didPath(did)}/schedules/${encodeURIComponent(rkey)}/duplicate`,
-    { method: "POST" }
-  );
+  return xrpcProcedure<ScheduledPostSummary>(XRPC.duplicateSchedule, {
+    accountDid: did,
+    rkey,
+  });
 }
 
 export async function publishNow(
   rkey: string,
   did?: string
 ): Promise<ScheduledPostSummary> {
-  const path = did
-    ? `/v1/accounts/${didPath(did)}/schedules/${encodeURIComponent(rkey)}/publish-now`
-    : `/v1/schedules/${encodeURIComponent(rkey)}/publish-now`;
-  return requestJSON<ScheduledPostSummary>(
-    path,
-    {
-      method: "POST",
-    }
-  );
+  return xrpcProcedure<ScheduledPostSummary>(XRPC.publishNow, {
+    accountDid: did,
+    rkey,
+  });
 }

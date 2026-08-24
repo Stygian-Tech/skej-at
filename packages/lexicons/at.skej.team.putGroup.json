@@ -1,0 +1,78 @@
+{
+  "lexicon": 1,
+  "id": "at.skej.team.putGroup",
+  "defs": {
+    "main": {
+      "type": "procedure",
+      "input": {
+        "encoding": "application/json",
+        "schema": {
+          "type": "object",
+          "required": [
+            "teamRkey",
+            "name"
+          ],
+          "properties": {
+            "teamRkey": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 512
+            },
+            "groupRkey": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 512
+            },
+            "name": {
+              "type": "string",
+              "minLength": 1,
+              "maxGraphemes": 120,
+              "maxLength": 512
+            },
+            "memberDids": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "format": "did"
+              },
+              "maxLength": 1000
+            },
+            "brandGrantUris": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "format": "at-uri"
+              },
+              "maxLength": 1000
+            }
+          }
+        }
+      },
+      "output": {
+        "encoding": "application/json",
+        "schema": {
+          "type": "ref",
+          "ref": "at.skej.defs#groupSummary"
+        }
+      },
+      "errors": [
+        {
+          "name": "AuthRequired"
+        },
+        {
+          "name": "InvalidRequest"
+        },
+        {
+          "name": "Forbidden"
+        },
+        {
+          "name": "NotFound"
+        },
+        {
+          "name": "AccountNeedsReauth"
+        }
+      ],
+      "description": "Procedure contract for at.skej.team.putGroup."
+    }
+  }
+}

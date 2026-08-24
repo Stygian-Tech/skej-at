@@ -5,6 +5,7 @@ node_modules
 apps/web/.next
 apps/web/tsconfig.tsbuildinfo
 services/skej-api/.build
+packages/skej-kit/.build
 **/.DS_Store
 **/.env
 **/.env.*

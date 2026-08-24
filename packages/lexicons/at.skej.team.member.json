@@ -8,19 +8,55 @@
       "key": "tid",
       "record": {
         "type": "object",
-        "required": ["teamUri", "memberDid", "role", "status", "createdAt", "updatedAt"],
+        "required": [
+          "teamUri",
+          "memberDid",
+          "role",
+          "status",
+          "createdAt",
+          "updatedAt"
+        ],
         "properties": {
-          "teamUri": { "type": "string", "format": "at-uri" },
-          "memberDid": { "type": "string", "format": "did" },
-          "role": { "type": "string", "enum": ["admin", "user"] },
-          "status": { "type": "string", "enum": ["active", "disabled"] },
+          "teamUri": {
+            "type": "string",
+            "format": "at-uri"
+          },
+          "memberDid": {
+            "type": "string",
+            "format": "did"
+          },
+          "role": {
+            "type": "string",
+            "enum": [
+              "admin",
+              "user"
+            ],
+            "maxLength": 8192
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "active",
+              "disabled"
+            ],
+            "maxLength": 8192
+          },
           "groupUris": {
             "type": "array",
-            "items": { "type": "string", "format": "at-uri" },
+            "items": {
+              "type": "string",
+              "format": "at-uri"
+            },
             "maxLength": 100
           },
-          "createdAt": { "type": "string", "format": "datetime" },
-          "updatedAt": { "type": "string", "format": "datetime" }
+          "createdAt": {
+            "type": "string",
+            "format": "datetime"
+          },
+          "updatedAt": {
+            "type": "string",
+            "format": "datetime"
+          }
         }
       }
     }

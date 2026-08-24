@@ -3,6 +3,7 @@ import Foundation
 import Hummingbird
 import HTTPTypes
 import Logging
+import SkejKit
 
 public func buildRouter(services: SkejServices) -> Router<BasicRequestContext> {
     let logger = Logger(label: "skej.router")
@@ -105,6 +106,10 @@ public func buildRouter(services: SkejServices) -> Router<BasicRequestContext> {
         return Response(status: .found, headers: headers)
     }
 
+    registerXRPCRoutes(on: router, services: services, logger: logger)
+
+    // Deprecated compatibility surface. The web app and new consumers use the
+    // Lexicon-defined /xrpc methods registered above.
     let v1 = router.group("v1")
 
     v1.get("me") { request, _ in
@@ -569,6 +574,376 @@ public func buildRouter(services: SkejServices) -> Router<BasicRequestContext> {
     }
 
     return router
+}
+
+private func registerXRPCRoutes(
+    on router: Router<BasicRequestContext>,
+    services: SkejServices,
+    logger: Logger
+) {
+    let xrpc = router.group("xrpc")
+
+    xrpc.get(RouterPath(SkejXRPCMethod.getSession.nsid)) { request, _ in
+        let viewer = try await authenticate(request, services: services)
+        return try jsonResponse(Viewer(
+            did: viewer.did,
+            handle: viewer.handle,
+            displayName: viewer.displayName,
+            avatar: viewer.avatar,
+            defaultAccountDid: viewer.defaultAccountDid,
+            proFeaturesEnabled: services.config.proFeaturesEnabled
+        ))
+    }
+
+    xrpc.post(RouterPath(SkejXRPCMethod.logout.nsid)) { request, _ in
+        _ = try await decodeXRPCBody(request, as: SkejEmptyInput.self)
+        if let sessionID = cookie(named: "skej_session", in: request.headers[.cookie] ?? "") {
+            try await services.store.deleteWebSession(sessionID: sessionID)
+        }
+        var headers = HTTPFields()
+        let secure = services.config.environment == .local || services.config.environment == .test ? "" : "; Secure"
+        headers[HTTPField.Name("Set-Cookie")!] =
+            "skej_session=deleted; Path=/; HttpOnly; SameSite=Lax; Max-Age=0\(secure)"
+        return try jsonResponse(OKResponse(ok: true)).withHeaders(headers)
+    }
+
+    xrpc.get(RouterPath(SkejXRPCMethod.listAccounts.nsid)) { request, _ in
+        try validateXRPCQuery(request, allowed: [])
+        let viewer = try await authenticate(request, services: services)
+        var accounts = try await services.store.listManagedAccounts()
+        if !services.config.proFeaturesEnabled {
+            accounts = accounts.filter { $0.did == viewer.did || $0.did == viewer.defaultAccountDid }
+        }
+        return try jsonResponse(ListAccountsResponse(accounts: accounts))
+    }
+
+    registerScheduleXRPCRoutes(on: xrpc, services: services, logger: logger)
+    if services.config.proFeaturesEnabled {
+        registerProXRPCRoutes(on: xrpc, services: services)
+    }
+
+    // Hummingbird resolves an exact path registered for the other verb before
+    // considering the wildcard fallback. Register the inverse verb explicitly
+    // so every visible XRPC method produces the canonical 405 response.
+    for method in SkejXRPCMethod.all where !method.proOnly || services.config.proFeaturesEnabled {
+        if method == .seedDevelopment, services.config.environment == .prod {
+            continue
+        }
+        switch method.kind {
+        case .query:
+            xrpc.post(RouterPath(method.nsid)) { _, _ in
+                xrpcWrongVerbResponse()
+            }
+        case .procedure:
+            xrpc.get(RouterPath(method.nsid)) { _, _ in
+                xrpcWrongVerbResponse()
+            }
+        }
+    }
+
+    xrpc.get(":nsid") { request, context in
+        xrpcFallbackResponse(nsid: try context.parameters.require("nsid"), attemptedVerb: "GET")
+    }
+    xrpc.post(":nsid") { request, context in
+        xrpcFallbackResponse(nsid: try context.parameters.require("nsid"), attemptedVerb: "POST")
+    }
+}
+
+private func registerScheduleXRPCRoutes(
+    on xrpc: RouterGroup<BasicRequestContext>,
+    services: SkejServices,
+    logger: Logger
+) {
+    xrpc.get(RouterPath(SkejXRPCMethod.listSchedules.nsid)) { request, _ in
+        try validateXRPCQuery(request, allowed: ["accountDid"])
+        let (viewer, did) = try await xrpcAccount(request: request, services: services)
+        _ = try await requireAnyBrandCapability([.create, .approve, .manage], brandDid: did, viewer: viewer, services: services)
+        return try await listSchedules(did: did, services: services)
+    }
+
+    xrpc.post(RouterPath(SkejXRPCMethod.createSchedule.nsid)) { request, _ in
+        let input = try await decodeXRPCBody(request, as: SkejCreateScheduleInput.self)
+        let (viewer, did) = try await xrpcAccount(did: input.accountDid, request: request, services: services)
+        return try await createSchedule(
+            did: did,
+            body: CreateScheduleRequest(record: input.record),
+            viewer: viewer,
+            services: services
+        )
+    }
+
+    xrpc.post(RouterPath(SkejXRPCMethod.updateSchedule.nsid)) { request, _ in
+        let input = try await decodeXRPCBody(request, as: SkejUpdateScheduleInput.self)
+        let (viewer, did) = try await xrpcAccount(did: input.accountDid, request: request, services: services)
+        return try await updateSchedule(
+            did: did,
+            rkey: input.rkey,
+            body: CreateScheduleRequest(record: input.record),
+            viewer: viewer,
+            services: services
+        )
+    }
+
+    xrpc.post(RouterPath(SkejXRPCMethod.cancelSchedule.nsid)) { request, _ in
+        let input = try await decodeXRPCBody(request, as: SkejScheduleParameters.self)
+        let (viewer, did) = try await xrpcAccount(did: input.accountDid, request: request, services: services)
+        _ = try await requireBrandCapability(.approve, brandDid: did, viewer: viewer, services: services)
+        return try await cancelSchedule(did: did, rkey: input.rkey, services: services)
+    }
+
+    xrpc.post(RouterPath(SkejXRPCMethod.publishNow.nsid)) { request, _ in
+        let input = try await decodeXRPCBody(request, as: SkejScheduleParameters.self)
+        let (viewer, did) = try await xrpcAccount(did: input.accountDid, request: request, services: services)
+        _ = try await requireBrandCapability(.approve, brandDid: did, viewer: viewer, services: services)
+        return try await publishNow(did: did, rkey: input.rkey, services: services)
+    }
+
+    xrpc.post(RouterPath(SkejXRPCMethod.createLinkPreview.nsid)) { request, _ in
+        let input = try await decodeXRPCBody(request, as: SkejCreateLinkPreviewInput.self)
+        let (_, did) = try await xrpcAccount(did: input.accountDid, request: request, services: services)
+        do {
+            return try jsonResponse(try await LinkPreviewService(pdsClient: services.pdsClient)
+                .hydrate(did: did, url: input.url))
+        } catch LinkPreviewError.invalidURL {
+            throw APIError(status: .badRequest, code: "InvalidRequest", message: "Enter a valid HTTP or HTTPS link.")
+        } catch LinkPreviewError.unsafeURL {
+            throw APIError(status: .badRequest, code: "InvalidRequest", message: "That link cannot be previewed.")
+        } catch {
+            logger.warning("link preview failed", metadata: ["host": "\(URL(string: input.url)?.host ?? "unknown")"])
+            throw APIError(status: .badGateway, code: "UpstreamFailure", message: "The link preview could not be loaded.")
+        }
+    }
+}
+
+private func registerProXRPCRoutes(
+    on xrpc: RouterGroup<BasicRequestContext>,
+    services: SkejServices
+) {
+    xrpc.get(RouterPath(SkejXRPCMethod.listTeams.nsid)) { request, _ in
+        try validateXRPCQuery(request, allowed: [])
+        let viewer = try await authenticate(request, services: services)
+        return try jsonResponse(ListTeamsResponse(teams: try await listVisibleTeams(viewer: viewer, services: services)))
+    }
+
+    xrpc.get(RouterPath(SkejXRPCMethod.getTeam.nsid)) { request, _ in
+        try validateXRPCQuery(request, allowed: ["teamRkey"])
+        let viewer = try await authenticate(request, services: services)
+        return try jsonResponse(try await requireVisibleTeam(
+            rkey: try xrpcRequiredParameter(request, named: "teamRkey"),
+            viewer: viewer,
+            services: services
+        ))
+    }
+
+    xrpc.post(RouterPath(SkejXRPCMethod.createTeam.nsid)) { request, _ in
+        let viewer = try await authenticate(request, services: services)
+        let input = try await decodeXRPCBody(request, as: CreateTeamRequest.self)
+        let now = Timestamp.iso8601()
+        let rkey = newRkey()
+        let record = SkejTeamRecord(
+            ownerAdminDid: viewer.did,
+            title: input.title.trimmingCharacters(in: .whitespacesAndNewlines),
+            createdAt: now,
+            updatedAt: now
+        )
+        try validate(team: record)
+        try await services.pdsClient.writeRecord(did: viewer.did, collection: "at.skej.team", rkey: rkey, record: record)
+        let summary = TeamSummary(rkey: rkey, uri: ATURI.record(did: viewer.did, collection: "at.skej.team", rkey: rkey), record: record)
+        return try jsonResponse(summary)
+    }
+
+    xrpc.post(RouterPath(SkejXRPCMethod.updateTeam.nsid)) { request, _ in
+        let viewer = try await authenticate(request, services: services)
+        let input = try await decodeXRPCBody(request, as: SkejUpdateTeamInput.self)
+        var team = try await requireTeamAdmin(rkey: input.teamRkey, viewer: viewer, services: services)
+        if let title = input.title { team.record.title = title.trimmingCharacters(in: .whitespacesAndNewlines) }
+        if let status = input.status { team.record.status = status }
+        team.record.updatedAt = Timestamp.iso8601()
+        try validate(team: team.record)
+        try await services.pdsClient.writeRecord(did: teamOwnerDid(team.uri), collection: "at.skej.team", rkey: team.rkey, record: team.record)
+        return try jsonResponse(team)
+    }
+
+    xrpc.post(RouterPath(SkejXRPCMethod.transferTeamOwner.nsid)) { request, _ in
+        let viewer = try await authenticate(request, services: services)
+        let input = try await decodeXRPCBody(request, as: SkejTransferTeamOwnerInput.self)
+        var team = try await requireOwnedTeam(rkey: input.teamRkey, viewer: viewer, services: services)
+        team.record.ownerAdminDid = input.ownerAdminDid
+        team.record.updatedAt = Timestamp.iso8601()
+        try await services.pdsClient.writeRecord(did: viewer.did, collection: "at.skej.team", rkey: team.rkey, record: team.record)
+        return try jsonResponse(team)
+    }
+
+    xrpc.get(RouterPath(SkejXRPCMethod.listMembers.nsid)) { request, _ in
+        let team = try await xrpcVisibleTeam(request: request, services: services)
+        return try jsonResponse(ListMembersResponse(members: try await listTeamMembers(team: team, services: services)))
+    }
+    xrpc.get(RouterPath(SkejXRPCMethod.listGroups.nsid)) { request, _ in
+        let team = try await xrpcVisibleTeam(request: request, services: services)
+        return try jsonResponse(ListGroupsResponse(groups: try await listTeamGroups(team: team, services: services)))
+    }
+    xrpc.get(RouterPath(SkejXRPCMethod.listBrandGrants.nsid)) { request, _ in
+        let team = try await xrpcVisibleTeam(request: request, services: services)
+        return try jsonResponse(ListBrandGrantsResponse(grants: try await listBrandGrants(team: team, services: services)))
+    }
+    xrpc.get(RouterPath(SkejXRPCMethod.listBrands.nsid)) { request, _ in
+        let team = try await xrpcVisibleTeam(request: request, services: services)
+        return try jsonResponse(ListBrandsResponse(brands: try await listBrands(team: team, services: services)))
+    }
+
+    xrpc.post(RouterPath(SkejXRPCMethod.putMember.nsid)) { request, _ in
+        let viewer = try await authenticate(request, services: services)
+        let input = try await decodeXRPCBody(request, as: SkejPutMemberInput.self)
+        let team = try await requireTeamAdmin(rkey: input.teamRkey, viewer: viewer, services: services)
+        let now = Timestamp.iso8601()
+        let rkey = input.memberDid.replacingOccurrences(of: ":", with: "_")
+        let existing = try await services.pdsClient.getRecord(did: teamOwnerDid(team.uri), collection: "at.skej.team.member", rkey: rkey, as: TeamMemberRecord.self)
+        let record = TeamMemberRecord(teamUri: team.uri, memberDid: input.memberDid, role: input.role, status: input.status ?? existing?.status ?? .active, groupUris: input.groupUris ?? existing?.groupUris ?? [], createdAt: existing?.createdAt ?? now, updatedAt: now)
+        try await services.pdsClient.writeRecord(did: teamOwnerDid(team.uri), collection: "at.skej.team.member", rkey: rkey, record: record)
+        return try jsonResponse(TeamMemberSummary(rkey: rkey, uri: ATURI.record(did: teamOwnerDid(team.uri), collection: "at.skej.team.member", rkey: rkey), record: record))
+    }
+
+    xrpc.post(RouterPath(SkejXRPCMethod.putGroup.nsid)) { request, _ in
+        let viewer = try await authenticate(request, services: services)
+        let input = try await decodeXRPCBody(request, as: SkejPutGroupInput.self)
+        let team = try await requireTeamAdmin(rkey: input.teamRkey, viewer: viewer, services: services)
+        let now = Timestamp.iso8601()
+        let rkey = input.groupRkey ?? newRkey()
+        let existing = try await services.pdsClient.getRecord(did: teamOwnerDid(team.uri), collection: "at.skej.team.group", rkey: rkey, as: TeamGroupRecord.self)
+        let record = TeamGroupRecord(teamUri: team.uri, name: input.name, memberDids: input.memberDids ?? existing?.memberDids ?? [], brandGrantUris: input.brandGrantUris ?? existing?.brandGrantUris ?? [], createdAt: existing?.createdAt ?? now, updatedAt: now)
+        try await services.pdsClient.writeRecord(did: teamOwnerDid(team.uri), collection: "at.skej.team.group", rkey: rkey, record: record)
+        return try jsonResponse(TeamGroupSummary(rkey: rkey, uri: ATURI.record(did: teamOwnerDid(team.uri), collection: "at.skej.team.group", rkey: rkey), record: record))
+    }
+
+    xrpc.post(RouterPath(SkejXRPCMethod.putBrandGrant.nsid)) { request, _ in
+        let viewer = try await authenticate(request, services: services)
+        let input = try await decodeXRPCBody(request, as: SkejPutBrandGrantInput.self)
+        let team = try await requireTeamAdmin(rkey: input.teamRkey, viewer: viewer, services: services)
+        let now = Timestamp.iso8601()
+        let rkey = input.grantRkey ?? newRkey()
+        let existing = try await services.pdsClient.getRecord(did: teamOwnerDid(team.uri), collection: "at.skej.team.brandGrant", rkey: rkey, as: BrandGrantRecord.self)
+        let record = BrandGrantRecord(teamUri: team.uri, brandDid: input.brandDid, granteeType: input.granteeType, grantee: input.grantee, capabilities: Array(Set(input.capabilities)), createdAt: existing?.createdAt ?? now, updatedAt: now)
+        try await services.pdsClient.writeRecord(did: teamOwnerDid(team.uri), collection: "at.skej.team.brandGrant", rkey: rkey, record: record)
+        return try jsonResponse(BrandGrantSummary(rkey: rkey, uri: ATURI.record(did: teamOwnerDid(team.uri), collection: "at.skej.team.brandGrant", rkey: rkey), record: record))
+    }
+
+    xrpc.post(RouterPath(SkejXRPCMethod.putBrand.nsid)) { request, _ in
+        let viewer = try await authenticate(request, services: services)
+        let input = try await decodeXRPCBody(request, as: SkejPutBrandInput.self)
+        let team = try await requireTeamAdmin(rkey: input.teamRkey, viewer: viewer, services: services)
+        let now = Timestamp.iso8601()
+        let rkey = input.brandDid.replacingOccurrences(of: ":", with: "_")
+        let existing = try await services.pdsClient.getRecord(did: input.brandDid, collection: "at.skej.brand", rkey: rkey, as: SkejBrandRecord.self)
+        let record = SkejBrandRecord(teamUri: team.uri, ownerAdminDid: team.record.ownerAdminDid, brandDid: input.brandDid, status: input.status ?? existing?.status ?? .active, createdAt: existing?.createdAt ?? now, updatedAt: now)
+        try await services.pdsClient.writeRecord(did: input.brandDid, collection: "at.skej.brand", rkey: rkey, record: record)
+        return try jsonResponse(BrandSummary(rkey: rkey, uri: ATURI.record(did: input.brandDid, collection: "at.skej.brand", rkey: rkey), record: record))
+    }
+
+    xrpc.get(RouterPath(SkejXRPCMethod.getBrandProfile.nsid)) { request, _ in
+        try validateXRPCQuery(request, allowed: ["did"])
+        let did = try xrpcRequiredParameter(request, named: "did")
+        let viewer = try await authorize(did: did, request: request, services: services)
+        _ = try await requireBrandCapability(.create, brandDid: did, viewer: viewer, services: services)
+        return try jsonResponse(try await services.pdsClient.getBrandProfile(did: did))
+    }
+
+    xrpc.post(RouterPath(SkejXRPCMethod.updateBrandProfile.nsid)) { request, _ in
+        let input = try await decodeXRPCBody(request, as: SkejUpdateBrandProfileInput.self)
+        let viewer = try await authorize(did: input.did, request: request, services: services)
+        _ = try await requireBrandCapability(.manage, brandDid: input.did, viewer: viewer, services: services)
+        let update = UpdateBrandProfileRequest(displayName: input.displayName, description: input.description, avatar: input.avatar)
+        return try jsonResponse(try await services.pdsClient.updateBrandProfile(did: input.did, profile: update))
+    }
+
+    xrpc.post(RouterPath(SkejXRPCMethod.retrySchedule.nsid)) { request, _ in
+        let input = try await decodeXRPCBody(request, as: SkejScheduleParameters.self)
+        let (viewer, did) = try await xrpcAccount(did: input.accountDid, request: request, services: services)
+        _ = try await requireBrandCapability(.approve, brandDid: did, viewer: viewer, services: services)
+        return try await retrySchedule(did: did, rkey: input.rkey, services: services)
+    }
+
+    xrpc.post(RouterPath(SkejXRPCMethod.duplicateSchedule.nsid)) { request, _ in
+        let input = try await decodeXRPCBody(request, as: SkejScheduleParameters.self)
+        let (viewer, did) = try await xrpcAccount(did: input.accountDid, request: request, services: services)
+        _ = try await requireBrandCapability(.create, brandDid: did, viewer: viewer, services: services)
+        return try await duplicateSchedule(did: did, rkey: input.rkey, services: services)
+    }
+
+    xrpc.post(RouterPath(SkejXRPCMethod.recordView.nsid)) { request, _ in
+        let input = try await decodeXRPCBody(request, as: SkejScheduleParameters.self)
+        let (_, did) = try await xrpcAccount(did: input.accountDid, request: request, services: services)
+        try await services.store.insertAuditEvent(did: did, scheduleRkey: input.rkey, action: "schedule_viewed", message: "Viewed schedule \(input.rkey).", now: Timestamp.iso8601())
+        return try jsonResponse(OKResponse(ok: true))
+    }
+
+    xrpc.get(RouterPath(SkejXRPCMethod.listAuditEvents.nsid)) { request, _ in
+        try validateXRPCQuery(request, allowed: ["accountDid"])
+        let (_, did) = try await xrpcAccount(request: request, services: services)
+        return try jsonResponse(ListAuditEventsResponse(events: try await services.store.listAuditEvents(did: did)))
+    }
+
+    if services.config.environment != .prod {
+        xrpc.post(RouterPath(SkejXRPCMethod.seedDevelopment.nsid)) { request, _ in
+            _ = try await decodeXRPCBody(request, as: SkejEmptyInput.self)
+            try await seedDemoData(services: services)
+            return try jsonResponse(OKResponse(ok: true))
+        }
+    }
+}
+
+private func xrpcVisibleTeam(request: Request, services: SkejServices) async throws -> TeamSummary {
+    try validateXRPCQuery(request, allowed: ["teamRkey"])
+    let viewer = try await authenticate(request, services: services)
+    return try await requireVisibleTeam(rkey: try xrpcRequiredParameter(request, named: "teamRkey"), viewer: viewer, services: services)
+}
+
+private func xrpcAccount(
+    did: String? = nil,
+    request: Request,
+    services: SkejServices
+) async throws -> (Viewer, String) {
+    let viewer = try await authenticate(request, services: services)
+    let selected = did ?? request.uri.queryParameters.get("accountDid") ?? viewer.defaultAccountDid ?? viewer.did
+    guard services.config.proFeaturesEnabled || selected == viewer.did || selected == viewer.defaultAccountDid else {
+        throw HTTPError(.notFound)
+    }
+    return (viewer, selected)
+}
+
+private func xrpcRequiredParameter(_ request: Request, named name: String) throws -> String {
+    guard let value = request.uri.queryParameters.get(name)?.trimmingCharacters(in: .whitespacesAndNewlines), !value.isEmpty else {
+        throw APIError(status: .badRequest, code: "InvalidRequest", message: "\(name) is required")
+    }
+    return value
+}
+
+private func validateXRPCQuery(_ request: Request, allowed: Set<String>) throws {
+    var seen: Set<String> = []
+    for (rawKey, _) in request.uri.queryParameters {
+        let key = String(rawKey)
+        guard allowed.contains(key), seen.insert(key).inserted else {
+            throw APIError(status: .badRequest, code: "InvalidRequest", message: allowed.contains(key) ? "Query parameter \(key) must not be repeated" : "Unknown query parameter: \(key)")
+        }
+    }
+}
+
+private func decodeXRPCBody<T: Decodable>(_ request: Request, as type: T.Type) async throws -> T {
+    let contentType = request.headers[.contentType]?.split(separator: ";", maxSplits: 1).first?.lowercased()
+    guard contentType == "application/json" else {
+        throw APIError(status: .badRequest, code: "InvalidRequest", message: "Content-Type must be application/json")
+    }
+    return try await decodeJSONBody(request, as: type)
+}
+
+private func xrpcFallbackResponse(nsid: String, attemptedVerb: String) -> Response {
+    if let known = SkejXRPCMethod.all.first(where: { $0.nsid == nsid }), known.verb != attemptedVerb {
+        return xrpcWrongVerbResponse()
+    }
+    return (try? jsonResponse(ErrorBody(error: "XrpcNotSupported", message: "Unsupported XRPC method"), status: .notFound)) ?? Response(status: .notFound)
+}
+
+private func xrpcWrongVerbResponse() -> Response {
+    (try? jsonResponse(ErrorBody(error: "InvalidRequest", message: "XRPC method was invoked with the wrong HTTP verb"), status: .methodNotAllowed)) ?? Response(status: .methodNotAllowed)
 }
 
 private func seedDemoData(services: SkejServices) async throws {

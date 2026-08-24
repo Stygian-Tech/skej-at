@@ -5,8 +5,30 @@ Skej is an AT Protocol post scheduler. Users sign in with their PDS, create full
 ## Layout
 
 - `apps/web`: Next.js App Router UI.
-- `services/skej-api`: Swift 6 Hummingbird API and always-on worker.
+- `packages/skej-kit`: reusable Swift 6 scheduling, PDS, worker, and typed XRPC client package.
+- `services/skej-api`: thin Hummingbird OAuth/session host (`SkejGateway`) and executable.
 - `packages/lexicons`: AT Protocol lexicon JSON.
+
+## XRPC API
+
+Product operations are defined by Lexicons and exposed at top-level
+`/xrpc/{NSID}` routes. Queries use `GET` with declared query parameters;
+procedures use `POST` with `application/json` input. Errors use the standard
+`{"error":"Name","message":"Human-readable detail"}` shape.
+
+Examples:
+
+```text
+GET  /xrpc/at.skej.schedule.list?accountDid=did:plc:example
+POST /xrpc/at.skej.schedule.create
+POST /xrpc/at.skej.schedule.publishNow
+GET  /xrpc/at.skej.team.list
+```
+
+Health checks and OAuth metadata/start/callback routes remain ordinary HTTP
+because they are infrastructure or OAuth protocol endpoints, not XRPC methods.
+The legacy `/v1` surface remains temporarily as a compatibility adapter; the
+web app and new consumers use XRPC.
 
 ## Local Development
 

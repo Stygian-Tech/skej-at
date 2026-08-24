@@ -2,6 +2,7 @@ import Foundation
 import Hummingbird
 import HTTPTypes
 import Logging
+import SkejKit
 
 public struct ErrorBody: Codable, Sendable {
     public let error: String

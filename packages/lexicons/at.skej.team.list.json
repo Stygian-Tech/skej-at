@@ -1,0 +1,51 @@
+{
+  "lexicon": 1,
+  "id": "at.skej.team.list",
+  "defs": {
+    "main": {
+      "type": "query",
+      "parameters": {
+        "type": "params",
+        "properties": {
+        }
+      },
+      "output": {
+        "encoding": "application/json",
+        "schema": {
+          "type": "object",
+          "required": [
+            "teams"
+          ],
+          "properties": {
+            "teams": {
+              "type": "array",
+              "items": {
+                "type": "ref",
+                "ref": "at.skej.defs#teamSummary"
+              },
+              "maxLength": 1000
+            }
+          }
+        }
+      },
+      "errors": [
+        {
+          "name": "AuthRequired"
+        },
+        {
+          "name": "InvalidRequest"
+        },
+        {
+          "name": "Forbidden"
+        },
+        {
+          "name": "NotFound"
+        },
+        {
+          "name": "AccountNeedsReauth"
+        }
+      ],
+      "description": "Query contract for at.skej.team.list."
+    }
+  }
+}
