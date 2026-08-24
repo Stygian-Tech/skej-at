@@ -32,6 +32,57 @@ struct ATProtoPDSClientTests {
         #expect(strongRefURI(requests[2], path: ["record", "reply", "parent"]) == secondURI)
     }
 
+    @Test func publishesLabeledHypertextWithTheAuthoredTargetFacet() async throws {
+        let http = RecordingPublishHTTPClient()
+        let client = try await authenticatedClient(http: http)
+        var record = makeRecord()
+        record.publishRkey = "3hypertextlink"
+        record.posts = [PostPlan(
+            text: "stale",
+            source: PostSource(
+                format: .markdown,
+                text: "[https://shown.example](https://target.example)"
+            ),
+            publishRkey: record.publishRkey
+        )]
+
+        _ = try await client.publishThread(did: "did:plc:test", record: record)
+
+        let requests = await http.publishBodies()
+        #expect(stringValue(requests[0], path: ["record", "text"]) == "https://shown.example")
+        guard case let .array(facets)? = value(requests[0], path: ["record", "facets"]) else {
+            Issue.record("Expected a labeled-link facet in the published post")
+            return
+        }
+        #expect(facets.count == 1)
+        #expect(facetFeatureString(facets[0], key: "uri") == "https://target.example")
+        #expect(facetByteRange(facets[0]) == 0..<21)
+    }
+
+    @Test func preservesCodeMarkersForClientSideRendering() async throws {
+        let http = RecordingPublishHTTPClient()
+        let client = try await authenticatedClient(http: http)
+        var record = makeRecord()
+        record.publishRkey = "3clientcodefmt"
+        record.posts = [PostPlan(
+            text: "stale",
+            source: PostSource(
+                format: .markdown,
+                text: "Use `mono`.\n```swift\nlet answer = 42\n```"
+            ),
+            publishRkey: record.publishRkey
+        )]
+
+        _ = try await client.publishThread(did: "did:plc:test", record: record)
+
+        let requests = await http.publishBodies()
+        #expect(
+            stringValue(requests[0], path: ["record", "text"]) ==
+                "Use `mono`.\n```swift\nlet answer = 42\n```"
+        )
+        #expect(value(requests[0], path: ["record", "facets"]) == nil)
+    }
+
     @Test func appliesExternalReplyToFirstPostThenChainsThread() async throws {
         let http = RecordingPublishHTTPClient()
         let client = try await authenticatedClient(http: http)
@@ -331,6 +382,24 @@ private func strongRefURI(_ object: [String: JSONValue], path: [String]) -> Stri
 
 private func strongRefCID(_ object: [String: JSONValue], path: [String]) -> String? {
     stringValue(object, path: path + ["cid"])
+}
+
+private func facetFeatureString(_ facet: JSONValue, key: String) -> String? {
+    guard case let .object(object) = facet,
+          case let .array(features)? = object["features"],
+          case let .object(feature)? = features.first,
+          case let .string(result)? = feature[key]
+    else { return nil }
+    return result
+}
+
+private func facetByteRange(_ facet: JSONValue) -> Range<Int>? {
+    guard case let .object(object) = facet,
+          case let .object(index)? = object["index"],
+          case let .number(start)? = index["byteStart"],
+          case let .number(end)? = index["byteEnd"]
+    else { return nil }
+    return Int(start)..<Int(end)
 }
 
 private struct UnreachableHTTPClient: HTTPClient {

@@ -1,14 +1,9 @@
 "use client";
 
 import {
-  Bold,
   Code2,
-  Italic,
+  FileCode2,
   Link2,
-  List,
-  ListOrdered,
-  Quote,
-  Strikethrough,
 } from "lucide-react";
 import * as React from "react";
 
@@ -24,8 +19,6 @@ import {
 import type { PostPlan } from "@/lib/skejTypes";
 import { cn } from "@/lib/utils";
 
-type EditorMode = "write" | "preview";
-
 interface SocialMarkdownEditorProps {
   index: number;
   post: PostPlan;
@@ -40,17 +33,12 @@ interface SocialMarkdownPreviewProps extends React.HTMLAttributes<HTMLDivElement
 const COMMANDS: Array<{
   command: SocialMarkdownCommand;
   label: string;
-  icon: typeof Bold;
+  icon: typeof Code2;
   shortcut?: string;
 }> = [
-  { command: "bold", label: "Bold", icon: Bold, shortcut: "⌘B" },
-  { command: "italic", label: "Italic", icon: Italic, shortcut: "⌘I" },
-  { command: "strike", label: "Strikethrough", icon: Strikethrough, shortcut: "⌘⇧S" },
-  { command: "code", label: "Inline code", icon: Code2, shortcut: "⌘E" },
   { command: "link", label: "Link", icon: Link2, shortcut: "⌘K" },
-  { command: "quote", label: "Blockquote", icon: Quote },
-  { command: "unordered-list", label: "Bulleted list", icon: List },
-  { command: "ordered-list", label: "Numbered list", icon: ListOrdered },
+  { command: "code", label: "Monospace", icon: Code2, shortcut: "⌘E" },
+  { command: "code-block", label: "Code block", icon: FileCode2 },
 ];
 
 function shortcutCommand(event: React.KeyboardEvent<HTMLTextAreaElement>) {
@@ -62,6 +50,88 @@ function shortcutCommand(event: React.KeyboardEvent<HTMLTextAreaElement>) {
   if (key === "e" && !event.shiftKey) return "code";
   if (key === "k" && !event.shiftKey) return "link";
   return null;
+}
+
+function renderInlineCode(text: string, keyPrefix: string): React.ReactNode[] {
+  const nodes: React.ReactNode[] = [];
+  let cursor = 0;
+  let token = 0;
+  while (cursor < text.length) {
+    const opening = text.indexOf("`", cursor);
+    const closing = opening >= 0 ? text.indexOf("`", opening + 1) : -1;
+    if (opening < 0 || closing <= opening + 1) {
+      nodes.push(text.slice(cursor));
+      break;
+    }
+    if (opening > cursor) nodes.push(text.slice(cursor, opening));
+    nodes.push(
+      <code
+        className="rounded-md bg-muted px-1.5 py-0.5 font-mono text-[0.92em] font-semibold"
+        key={`${keyPrefix}-inline-${token}`}
+      >
+        {text.slice(opening + 1, closing)}
+      </code>
+    );
+    cursor = closing + 1;
+    token += 1;
+  }
+  return nodes;
+}
+
+function renderCodePresentation(text: string, keyPrefix: string): React.ReactNode[] {
+  const nodes: React.ReactNode[] = [];
+  const lines = text.split("\n");
+  let prose: string[] = [];
+  let code: string[] = [];
+  let fence: "```" | "~~~" | null = null;
+  let token = 0;
+  const flushProse = () => {
+    if (prose.length === 0) return;
+    const value = prose.join("\n");
+    nodes.push(
+      <React.Fragment key={`${keyPrefix}-prose-${token}`}>
+        {renderInlineCode(value, `${keyPrefix}-${token}`)}
+      </React.Fragment>
+    );
+    prose = [];
+    token += 1;
+  };
+  const flushCode = () => {
+    nodes.push(
+      <pre
+        className="my-2 overflow-x-auto rounded-xl bg-muted px-3 py-2 font-mono text-sm font-semibold leading-6"
+        key={`${keyPrefix}-block-${token}`}
+      >
+        <code>{code.join("\n")}</code>
+      </pre>
+    );
+    code = [];
+    token += 1;
+  };
+
+  for (const line of lines) {
+    const trimmed = line.trim();
+    const delimiter = trimmed.startsWith("```")
+      ? "```"
+      : trimmed.startsWith("~~~")
+        ? "~~~"
+        : null;
+    if (fence) {
+      if (delimiter === fence) {
+        flushCode();
+        fence = null;
+      } else code.push(line);
+    } else if (delimiter) {
+      flushProse();
+      fence = delimiter;
+    } else prose.push(line);
+  }
+  if (fence) {
+    prose.push(fence, ...code);
+    code = [];
+  }
+  flushProse();
+  return nodes;
 }
 
 export function SocialMarkdownPreview({
@@ -90,7 +160,9 @@ export function SocialMarkdownPreview({
               {segment.text}
             </a>
           ) : (
-            <React.Fragment key={segmentIndex}>{segment.text}</React.Fragment>
+            <React.Fragment key={segmentIndex}>
+              {renderCodePresentation(segment.text, `segment-${segmentIndex}`)}
+            </React.Fragment>
           )
         )
       ) : (
@@ -105,7 +177,6 @@ export const SocialMarkdownEditor = React.memo(function SocialMarkdownEditor({
   post,
   onChange,
 }: SocialMarkdownEditorProps) {
-  const [mode, setMode] = React.useState<EditorMode>("write");
   const textareaRef = React.useRef<HTMLTextAreaElement>(null);
   const pendingSelection = React.useRef<{ start: number; end: number } | null>(null);
   const source = markdownSourceForPost(post);
@@ -153,81 +224,61 @@ export const SocialMarkdownEditor = React.memo(function SocialMarkdownEditor({
   return (
     <div className="grid min-w-0 gap-2">
       <div className="flex flex-wrap items-center justify-between gap-2">
-        <div
-          aria-label={`Post ${index + 1} editor mode`}
-          className="flex rounded-full bg-muted p-1"
-          role="tablist"
-        >
-          {(["write", "preview"] as const).map((item) => (
-            <button
-              aria-controls={`post-${index + 1}-${item}`}
-              aria-selected={mode === item}
-              className={cn(
-                "min-h-9 rounded-full px-3 text-xs font-black capitalize transition",
-                mode === item ? "bg-card text-foreground shadow-sm" : "text-muted-foreground"
-              )}
-              id={`post-${index + 1}-${item}-tab`}
-              key={item}
-              onClick={() => setMode(item)}
-              role="tab"
-              type="button"
-            >
-              {item}
-            </button>
-          ))}
-        </div>
+        <span className="text-xs font-black text-foreground">Markdown</span>
         <span className="text-xs font-semibold text-muted-foreground">
-          Preview is the exact Bluesky text.
+          Links publish natively. Monospace and code blocks have limited client support.
         </span>
       </div>
 
-      {mode === "write" ? (
-        <div
-          aria-labelledby={`post-${index + 1}-write-tab`}
-          className="grid min-w-0 gap-2"
-          id={`post-${index + 1}-write`}
-          role="tabpanel"
-        >
-          <div aria-label="Markdown formatting" className="flex flex-wrap gap-1" role="toolbar">
-            {COMMANDS.map(({ command, label, icon: Icon, shortcut }) => (
-              <Button
-                aria-label={label}
-                key={command}
-                onMouseDown={(event) => event.preventDefault()}
-                onClick={() => applyCommand(command)}
-                size="icon"
-                title={shortcut ? `${label} (${shortcut})` : label}
-                type="button"
-                variant="ghost"
-              >
-                <Icon />
-              </Button>
-            ))}
-          </div>
-          <Textarea
-            aria-label={`Post ${index + 1} Markdown`}
-            onChange={(event) => updateSource(event.target.value)}
-            onKeyDown={(event) => {
-              const command = shortcutCommand(event);
-              if (!command) return;
-              event.preventDefault();
-              applyCommand(command);
-            }}
-            placeholder="What should future-you say? Markdown links and lightweight formatting are supported."
-            ref={textareaRef}
-            value={source}
-          />
+      <div className="grid min-w-0 gap-2">
+        <div aria-label="Markdown formatting" className="flex flex-wrap gap-1" role="toolbar">
+          {COMMANDS.map(({ command, label, icon: Icon, shortcut }) => (
+            <Button
+              aria-label={label}
+              key={command}
+              onMouseDown={(event) => event.preventDefault()}
+              onClick={() => applyCommand(command)}
+              size="icon"
+              title={shortcut ? `${label} (${shortcut})` : label}
+              type="button"
+              variant="ghost"
+            >
+              <Icon />
+            </Button>
+          ))}
         </div>
-      ) : (
-        <SocialMarkdownPreview
-          aria-labelledby={`post-${index + 1}-preview-tab`}
-          className="min-h-28 whitespace-pre-wrap break-words rounded-[1.5rem] border border-input bg-card px-4 py-3 text-base font-semibold leading-7"
-          emptyMessage="Nothing to preview yet."
-          id={`post-${index + 1}-preview`}
-          post={projection}
-          role="tabpanel"
+        <Textarea
+          aria-describedby={`post-${index + 1}-bluesky-output-label`}
+          aria-label={`Post ${index + 1} Markdown`}
+          onChange={(event) => updateSource(event.target.value)}
+          onKeyDown={(event) => {
+            const command = shortcutCommand(event);
+            if (!command) return;
+            event.preventDefault();
+            applyCommand(command);
+          }}
+          placeholder="What should future-you say? Markdown links and lightweight formatting are supported."
+          ref={textareaRef}
+          value={source}
         />
-      )}
+      </div>
+
+      <div className="grid min-w-0 gap-1.5">
+        <div
+          className="flex flex-wrap items-center justify-between gap-2 px-1 text-xs font-semibold text-muted-foreground"
+          id={`post-${index + 1}-bluesky-output-label`}
+        >
+          <span className="font-black text-foreground">Bluesky output</span>
+          <span>Rendered here; code presentation depends on the client.</span>
+        </div>
+        <SocialMarkdownPreview
+          aria-labelledby={`post-${index + 1}-bluesky-output-label`}
+          className="min-h-16 whitespace-pre-wrap break-words rounded-[1.25rem] border border-input bg-card px-4 py-3 text-base font-semibold leading-7"
+          emptyMessage="Your published text will appear here."
+          id={`post-${index + 1}-bluesky-output`}
+          post={projection}
+        />
+      </div>
     </div>
   );
 });

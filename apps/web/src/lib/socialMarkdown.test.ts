@@ -59,6 +59,27 @@ describe("social Markdown commands", () => {
     ).toEqual({ text: "hello", selectionStart: 0, selectionEnd: 5 });
   });
 
+  it("wraps and unwraps selected lines as a fenced code block", () => {
+    const wrapped = applySocialMarkdownCommand("let x = 1;", "code-block", 0, 10);
+    expect(wrapped).toEqual({
+      text: "```\nlet x = 1;\n```",
+      selectionStart: 4,
+      selectionEnd: 14,
+    });
+    expect(
+      applySocialMarkdownCommand(
+        wrapped.text,
+        "code-block",
+        wrapped.selectionStart,
+        wrapped.selectionEnd
+      )
+    ).toEqual({
+      text: "let x = 1;",
+      selectionStart: 0,
+      selectionEnd: 10,
+    });
+  });
+
   it("prefixes each selected list line and toggles the list off", () => {
     const listed = applySocialMarkdownCommand("one\ntwo", "unordered-list", 0, 7);
     expect(listed.text).toBe("- one\n- two");
@@ -72,11 +93,34 @@ describe("social Markdown commands", () => {
     ).toBe("one\ntwo");
   });
 
-  it("inserts a selected label and selects the URL placeholder", () => {
+  it("inserts a selected label, keeps a safe scheme, and selects the hostname", () => {
     expect(applySocialMarkdownCommand("Read docs", "link", 5, 9)).toEqual({
-      text: "Read [docs](https://)",
-      selectionStart: 12,
-      selectionEnd: 20,
+      text: "Read [docs](https://example.com)",
+      selectionStart: 20,
+      selectionEnd: 31,
+    });
+  });
+
+  it("compiles the result of replacing the selected hostname into hypertext", () => {
+    const command = applySocialMarkdownCommand("Read docs", "link", 5, 9);
+    const source =
+      command.text.slice(0, command.selectionStart) +
+      "skej.at" +
+      command.text.slice(command.selectionEnd);
+
+    expect(compileSocialMarkdown(source)).toEqual({
+      text: "Read docs",
+      facets: [
+        {
+          index: { byteStart: 5, byteEnd: 9 },
+          features: [
+            {
+              $type: "app.bsky.richtext.facet#link",
+              uri: "https://skej.at",
+            },
+          ],
+        },
+      ],
     });
   });
 });

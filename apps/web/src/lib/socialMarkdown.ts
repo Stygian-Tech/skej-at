@@ -5,6 +5,7 @@ export type SocialMarkdownCommand =
   | "italic"
   | "strike"
   | "code"
+  | "code-block"
   | "link"
   | "quote"
   | "unordered-list"
@@ -161,7 +162,12 @@ function compileInline(source: string): CompilationBuffer {
 
   while (index < source.length) {
     if (source[index] === "\\" && source[index + 1]?.match(ESCAPABLE_MARKDOWN)) {
+      const byteStart = byteLength(projection.text);
       append(source[index + 1]);
+      projection.suppressedFacetRanges.push({
+        byteStart,
+        byteEnd: byteLength(projection.text),
+      });
       index += 2;
       continue;
     }
@@ -211,6 +217,14 @@ function compileInline(source: string): CompilationBuffer {
           index = close.urlEnd + 1;
           continue;
         }
+        const byteStart = byteLength(projection.text);
+        append(source.slice(index, close.urlEnd + 1));
+        projection.suppressedFacetRanges.push({
+          byteStart,
+          byteEnd: byteLength(projection.text),
+        });
+        index = close.urlEnd + 1;
+        continue;
       }
     }
 
@@ -249,7 +263,7 @@ function compileInline(source: string): CompilationBuffer {
         const content = source.slice(index + marker.length, closing);
         if (marker === "`") {
           const byteStart = byteLength(projection.text);
-          append(content);
+          append(`${marker}${content}${marker}`);
           projection.suppressedFacetRanges.push({
             byteStart,
             byteEnd: byteLength(projection.text),
@@ -301,8 +315,9 @@ function addTagFacets(projection: CompilationBuffer): void {
 
 /**
  * Compiles Skej's deliberately small social-Markdown subset to the exact plain
- * text and rich-text facets Bluesky will receive. Unsupported Markdown remains
- * literal so the preview never promises formatting the network cannot render.
+ * text and rich-text facets Bluesky will receive. Inline and fenced code markers
+ * remain in the text for clients that render them locally; unsupported Markdown
+ * remains literal so the preview never promises a native facet that does not exist.
  */
 export function compileSocialMarkdown(source: string): SocialMarkdownProjection {
   const normalized = source.replace(/\r\n?/gu, "\n");
@@ -495,13 +510,38 @@ export function applySocialMarkdownCommand(
       return wrapSelection(source, selectionStart, selectionEnd, "~~", "struck text");
     case "code":
       return wrapSelection(source, selectionStart, selectionEnd, "`", "code");
+    case "code-block": {
+      const selected = source.slice(selectionStart, selectionEnd);
+      const before = source.slice(0, selectionStart);
+      const after = source.slice(selectionEnd);
+      const opening = "```\n";
+      const closing = "\n```";
+      if (selected && before.endsWith(opening) && after.startsWith(closing)) {
+        return {
+          text: before.slice(0, -opening.length) + selected + after.slice(closing.length),
+          selectionStart: selectionStart - opening.length,
+          selectionEnd: selectionEnd - opening.length,
+        };
+      }
+      const content = selected || "code";
+      return {
+        text: `${before}${opening}${content}${closing}${after}`,
+        selectionStart: selectionStart + opening.length,
+        selectionEnd: selectionStart + opening.length + content.length,
+      };
+    }
     case "link": {
       const selected = source.slice(selectionStart, selectionEnd);
       const label = selected || "link text";
-      const insertion = `[${label}](https://)`;
+      const hostnamePlaceholder = "example.com";
+      const insertion = `[${label}](https://${hostnamePlaceholder})`;
       const text = source.slice(0, selectionStart) + insertion + source.slice(selectionEnd);
-      const urlStart = selectionStart + label.length + 3;
-      return { text, selectionStart: urlStart, selectionEnd: urlStart + 8 };
+      const hostnameStart = selectionStart + label.length + "[](https://".length;
+      return {
+        text,
+        selectionStart: hostnameStart,
+        selectionEnd: hostnameStart + hostnamePlaceholder.length,
+      };
     }
     case "quote":
       return prefixSelectedLines(source, selectionStart, selectionEnd, () => "> ", /^\s*>\s?/u);

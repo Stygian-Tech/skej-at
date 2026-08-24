@@ -13,8 +13,9 @@ public struct SocialMarkdownCompilation: Equatable, Sendable {
 /// Compiles the deliberately small social-Markdown profile accepted by Skej into
 /// an `app.bsky.feed.post` text projection and UTF-8 link facets.
 ///
-/// This is intentionally not a general HTML or CommonMark renderer. Unsupported
-/// and malformed constructs remain literal so author input is never silently lost.
+/// Inline and fenced code markers remain available for clients that render them
+/// locally. This is intentionally not a general HTML or CommonMark renderer;
+/// unsupported and malformed constructs remain literal so input is never lost.
 public enum SocialMarkdownCompiler {
     public static func compile(_ markdown: String) -> SocialMarkdownCompilation {
         var buffer = CompilationBuffer()
@@ -81,11 +82,12 @@ public enum SocialMarkdownCompiler {
 
             if source[index] == "[", let syntax = linkSyntax(startingAt: index, in: source) {
                 let destination = String(source[syntax.destination]).trimmingCharacters(in: .whitespaces)
-                if isSafeHTTPURL(destination) {
+                if !source[syntax.label].isEmpty, isSafeHTTPURL(destination) {
                     let start = buffer.utf8Count
                     compileInline(source[syntax.label], into: &buffer)
                     let end = buffer.utf8Count
                     if start < end {
+                        buffer.removeFacets(overlapping: start..<end)
                         buffer.appendLinkFacet(byteStart: start, byteEnd: end, uri: destination)
                     }
                 } else {
@@ -98,7 +100,7 @@ public enum SocialMarkdownCompiler {
             if source[index] == "`", let closing = closingMarker("`", after: index, in: source) {
                 let contentStart = source.index(after: index)
                 if contentStart < closing {
-                    buffer.appendSuppressed(String(source[contentStart..<closing]))
+                    buffer.appendSuppressed(String(source[index...closing]))
                     index = source.index(after: closing)
                     continue
                 }
@@ -407,6 +409,13 @@ private struct CompilationBuffer {
                 ]),
             ]),
         ]))
+    }
+
+    mutating func removeFacets(overlapping range: Range<Int>) {
+        facets.removeAll { facet in
+            guard let existing = Self.byteRange(facet) else { return true }
+            return existing.overlaps(range)
+        }
     }
 
     mutating func sortFacets() {
