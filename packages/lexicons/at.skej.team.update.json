@@ -1,0 +1,63 @@
+{
+  "lexicon": 1,
+  "id": "at.skej.team.update",
+  "defs": {
+    "main": {
+      "type": "procedure",
+      "input": {
+        "encoding": "application/json",
+        "schema": {
+          "type": "object",
+          "required": [
+            "teamRkey"
+          ],
+          "properties": {
+            "teamRkey": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 512
+            },
+            "title": {
+              "type": "string",
+              "maxGraphemes": 120,
+              "maxLength": 512
+            },
+            "status": {
+              "type": "string",
+              "knownValues": [
+                "active",
+                "archived"
+              ],
+              "maxLength": 8192
+            }
+          }
+        }
+      },
+      "output": {
+        "encoding": "application/json",
+        "schema": {
+          "type": "ref",
+          "ref": "at.skej.defs#teamSummary"
+        }
+      },
+      "errors": [
+        {
+          "name": "AuthRequired"
+        },
+        {
+          "name": "InvalidRequest"
+        },
+        {
+          "name": "Forbidden"
+        },
+        {
+          "name": "NotFound"
+        },
+        {
+          "name": "AccountNeedsReauth"
+        }
+      ],
+      "description": "Procedure contract for at.skej.team.update."
+    }
+  }
+}

@@ -1,0 +1,59 @@
+{
+  "lexicon": 1,
+  "id": "at.skej.team.listGroups",
+  "defs": {
+    "main": {
+      "type": "query",
+      "parameters": {
+        "type": "params",
+        "required": [
+          "teamRkey"
+        ],
+        "properties": {
+          "teamRkey": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 512
+          }
+        }
+      },
+      "output": {
+        "encoding": "application/json",
+        "schema": {
+          "type": "object",
+          "required": [
+            "groups"
+          ],
+          "properties": {
+            "groups": {
+              "type": "array",
+              "items": {
+                "type": "ref",
+                "ref": "at.skej.defs#groupSummary"
+              },
+              "maxLength": 1000
+            }
+          }
+        }
+      },
+      "errors": [
+        {
+          "name": "AuthRequired"
+        },
+        {
+          "name": "InvalidRequest"
+        },
+        {
+          "name": "Forbidden"
+        },
+        {
+          "name": "NotFound"
+        },
+        {
+          "name": "AccountNeedsReauth"
+        }
+      ],
+      "description": "Query contract for at.skej.team.listGroups."
+    }
+  }
+}

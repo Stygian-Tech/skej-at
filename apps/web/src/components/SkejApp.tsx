@@ -27,6 +27,10 @@ import * as React from "react";
 
 import { OAuthLoginForm } from "@/components/OAuthLoginForm";
 import { SkejLogoMark } from "@/components/SkejLogoMark";
+import {
+  SocialMarkdownEditor,
+  SocialMarkdownPreview,
+} from "@/components/SocialMarkdownEditor";
 import { ThemeToggle } from "@/components/ThemeToggle";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -38,7 +42,6 @@ import {
   CardTitle,
 } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
-import { Textarea } from "@/components/ui/textarea";
 import {
   createSchedule,
   cancelSchedule,
@@ -61,7 +64,8 @@ import {
   MAX_POST_GRAPHEMES,
   MAX_SCHEDULE_TITLE_GRAPHEMES,
   countGraphemes,
-  firstHTTPURL,
+  firstPostLinkURL,
+  generateTID,
   localDatetimeValue,
   validateComposerDraft,
 } from "@/lib/editor";
@@ -71,6 +75,7 @@ import {
   canApplyAutomaticLinkPreview,
   shouldRemoveAutomaticLinkPreview,
 } from "@/lib/linkPreview";
+import { projectMarkdownPost } from "@/lib/socialMarkdown";
 import { cn } from "@/lib/utils";
 import {
   CommunityCalendarEventRecord,
@@ -111,7 +116,9 @@ function emptyDraft(date = defaultScheduleDate()): ComposerDraft {
     scheduledFor: localDatetimeValue(date),
     posts: [
       {
+        source: { format: "markdown", text: "" },
         text: "",
+        publishRkey: generateTID(),
         langs: ["en"],
         tags: [],
       },
@@ -124,7 +131,14 @@ function hydrationSafeDraft(): ComposerDraft {
     mode: "post",
     title: "",
     scheduledFor: "",
-    posts: [{ text: "", langs: ["en"], tags: [] }],
+    posts: [
+      {
+        source: { format: "markdown", text: "" },
+        text: "",
+        langs: ["en"],
+        tags: [],
+      },
+    ],
   };
 }
 
@@ -133,16 +147,27 @@ function draftFromSchedule(
   date = new Date(item.scheduledAt)
 ): ComposerDraft {
   const first = item.record.posts[0];
+  const relationship = item.record.dependency?.relationship;
   return {
-    mode: first?.reply ? "reply" : first?.embed?.record ? "quote" : "post",
+    mode:
+      relationship === "reply" || relationship === "quote"
+        ? relationship
+        : first?.reply
+          ? "reply"
+          : first?.embed?.record
+            ? "quote"
+            : "post",
     title: item.record.title ?? "",
     scheduledFor: localDatetimeValue(date),
     timezone: item.record.userTimezone,
     dependencyScheduleUri: item.record.dependency?.dependsOnScheduleUri,
-    posts: item.record.posts.map((post) => ({
-      ...post,
-      embed: post.embed ? { ...post.embed } : undefined,
-    })),
+    posts: item.record.posts.map((post) =>
+      projectMarkdownPost({
+        ...post,
+        publishRkey: post.publishRkey ?? generateTID(),
+        embed: post.embed ? { ...post.embed } : undefined,
+      })
+    ),
     contentWarning: first?.labels?.[0],
   };
 }
@@ -200,7 +225,9 @@ function statusLabel(status: string) {
 }
 
 function scheduleTitle(item: ScheduledPostSummary) {
-  return item.record.title?.trim() || item.record.posts[0]?.text?.trim() || "Untitled post";
+  const first = item.record.posts[0];
+  const text = first ? projectMarkdownPost(first).text.trim() : "";
+  return item.record.title?.trim() || text || "Untitled post";
 }
 
 function calendarDayKey(value: string) {
@@ -248,7 +275,10 @@ function buildCalendarEvent(item: ScheduledPostSummary): CommunityCalendarEventR
   return {
     $type: "community.lexicon.calendar.event",
     name: scheduleTitle(item),
-    description: item.record.posts.map((post) => post.text).filter(Boolean).join("\n\n"),
+    description: item.record.posts
+      .map((post) => projectMarkdownPost(post).text)
+      .filter(Boolean)
+      .join("\n\n"),
     startsAt,
     endsAt,
     timezone: item.record.userTimezone,
@@ -702,18 +732,27 @@ export function SkejApp() {
     };
   }, [draft.posts, linkPreviewRetryNonce, selectedAccountDid]);
 
-  function updatePost(index: number, text: string) {
+  function updatePost(index: number, nextPost: PostPlan) {
     setDraft((current) => ({
       ...current,
       posts: current.posts.map((post, postIndex) =>
-        postIndex === index ? { ...post, text } : post
+        postIndex === index ? nextPost : post
       ),
     }));
   }
 
   function updateFirstPost(updater: (post: PostPlan) => PostPlan) {
     setDraft((current) => {
-      const [first = { text: "", langs: ["en"], tags: [] }, ...rest] = current.posts;
+      const [
+        first = {
+          source: { format: "markdown" as const, text: "" },
+          text: "",
+          publishRkey: generateTID(),
+          langs: ["en"],
+          tags: [],
+        },
+        ...rest
+      ] = current.posts;
       return {
         ...current,
         posts: [updater(first), ...rest],
@@ -733,7 +772,8 @@ export function SkejApp() {
   }
 
   function removeLinkPreview(index: number) {
-    const url = firstHTTPURL(draft.posts[index]?.text ?? "");
+    const post = draft.posts[index];
+    const url = post ? firstPostLinkURL(post) : undefined;
     if (url) suppressedLinkURLs.current.set(index, url);
     automaticLinkURLs.current.delete(index);
     automaticLinkAccounts.current.delete(index);
@@ -751,7 +791,8 @@ export function SkejApp() {
   }
 
   function keepLinkPreviewManual(index: number) {
-    const url = firstHTTPURL(draft.posts[index]?.text ?? "");
+    const post = draft.posts[index];
+    const url = post ? firstPostLinkURL(post) : undefined;
     if (url) suppressedLinkURLs.current.set(index, url);
     automaticLinkURLs.current.delete(index);
     automaticLinkAccounts.current.delete(index);
@@ -763,7 +804,8 @@ export function SkejApp() {
   }
 
   function retryLinkPreview(index: number) {
-    const url = firstHTTPURL(draft.posts[index]?.text ?? "");
+    const post = draft.posts[index];
+    const url = post ? firstPostLinkURL(post) : undefined;
     if (url) suppressedLinkURLs.current.delete(index);
     automaticLinkURLs.current.delete(index);
     automaticLinkAccounts.current.delete(index);
@@ -1068,8 +1110,8 @@ export function SkejApp() {
           </div>
         ) : null}
 
-        <section className="grid gap-5 lg:grid-cols-[minmax(0,1.05fr)_minmax(360px,0.75fr)]">
-          <div className="flex flex-col gap-5">
+        <section className="grid min-w-0 gap-5 lg:grid-cols-[minmax(0,1.05fr)_minmax(360px,0.75fr)]">
+          <div className="flex min-w-0 flex-col gap-5">
             {authStatus === "loading" ? (
               <Card>
                 <CardContent className="flex items-center gap-3 p-5 text-sm font-bold text-muted-foreground">
@@ -1184,7 +1226,7 @@ export function SkejApp() {
                       return (
                         <div
                           key={index}
-                          className="flex flex-col gap-2 rounded-[1.25rem] border border-border bg-background/60 p-2.5 sm:rounded-[1.5rem] sm:p-3"
+                          className="flex min-w-0 flex-col gap-2 rounded-[1.25rem] border border-border bg-background/60 p-2.5 sm:rounded-[1.5rem] sm:p-3"
                         >
                           <div className="flex items-center justify-between gap-2">
                             <span className="text-sm font-black">
@@ -1213,11 +1255,10 @@ export function SkejApp() {
                               ) : null}
                             </div>
                           </div>
-                          <Textarea
-                            value={post.text}
-                            onChange={(event) => updatePost(index, event.target.value)}
-                            placeholder="What should future-you say?"
-                            aria-label={`Post ${index + 1} text`}
+                          <SocialMarkdownEditor
+                            index={index}
+                            onChange={(nextPost) => updatePost(index, nextPost)}
+                            post={post}
                           />
                           {previewStatus?.state === "loading" ? (
                             <div className="flex items-center gap-2 rounded-2xl bg-muted px-3 py-2 text-xs font-bold text-muted-foreground">
@@ -1573,7 +1614,7 @@ export function SkejApp() {
             </div>
           </nav>
 
-          <aside className="flex flex-col gap-5">
+          <aside className="flex min-w-0 flex-col gap-5">
             <Card className="overflow-hidden">
               <CardHeader>
                 <div className="flex items-center justify-between gap-3">
@@ -1731,9 +1772,12 @@ export function SkejApp() {
                           Post Content
                         </div>
                       ) : null}
-                      <p className="line-clamp-3 text-sm font-semibold leading-6">
-                        {selected.record.posts[0]?.text}
-                      </p>
+                      {selected.record.posts[0] ? (
+                        <SocialMarkdownPreview
+                          className="line-clamp-3 text-sm font-semibold leading-6"
+                          post={selected.record.posts[0]}
+                        />
+                      ) : null}
                     </div>
                     <div className="grid grid-cols-2 gap-2 text-xs font-bold text-muted-foreground">
                       <div className="rounded-2xl bg-card/70 p-3">

@@ -37,6 +37,8 @@ export interface RetryState {
 export interface ScheduleDependency {
   dependsOnScheduleUri: string;
   parentPublishedUri?: string;
+  parentPublishedCid?: string;
+  relationship?: "after" | "reply" | "quote";
 }
 
 export type ComposerMode = "post" | "reply" | "quote";
@@ -112,9 +114,16 @@ export interface ReplyDraft {
   };
 }
 
+export interface PostSource {
+  format: "markdown";
+  text: string;
+}
+
 export interface PostPlan {
+  source?: PostSource;
   text: string;
   facets?: RichFacet[];
+  publishRkey?: string;
   reply?: ReplyDraft;
   embed?: {
     $type?:
@@ -128,6 +137,12 @@ export interface PostPlan {
   langs?: string[];
   labels?: string[];
   tags?: string[];
+}
+
+export interface PublishedPostReference {
+  rkey: string;
+  uri: string;
+  cid: string;
 }
 
 export interface LinkPreviewRequest {
@@ -152,6 +167,7 @@ export interface SkejScheduleRecord {
   publishRkey: string;
   publishedUri?: string;
   publishedCid?: string;
+  publishedPosts?: PublishedPostReference[];
   retry: RetryState;
   lastError?: ScheduleError;
   dependency?: ScheduleDependency;

@@ -57,6 +57,7 @@ filter_changed() {
 
 filter_changed gateway \
   'services/skej-api/**' \
+  'packages/skej-kit/**' \
   'scripts/ci-swift.sh' \
   'railway/gateway.json' \
   '.github/workflows/ci.yml' \
@@ -65,6 +66,7 @@ filter_changed gateway \
 filter_changed web \
   'apps/web/**' \
   'packages/lexicons/**' \
+  'packages/skej-kit/**' \
   'package.json' \
   'bun.lock' \
   'turbo.json' \

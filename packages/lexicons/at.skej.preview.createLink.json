@@ -1,0 +1,57 @@
+{
+  "lexicon": 1,
+  "id": "at.skej.preview.createLink",
+  "defs": {
+    "main": {
+      "type": "procedure",
+      "input": {
+        "encoding": "application/json",
+        "schema": {
+          "type": "object",
+          "required": [
+            "url"
+          ],
+          "properties": {
+            "accountDid": {
+              "type": "string",
+              "format": "did"
+            },
+            "url": {
+              "type": "string",
+              "format": "uri",
+              "maxLength": 8192
+            }
+          }
+        }
+      },
+      "output": {
+        "encoding": "application/json",
+        "schema": {
+          "type": "ref",
+          "ref": "app.bsky.embed.external"
+        }
+      },
+      "errors": [
+        {
+          "name": "AuthRequired"
+        },
+        {
+          "name": "InvalidRequest"
+        },
+        {
+          "name": "Forbidden"
+        },
+        {
+          "name": "NotFound"
+        },
+        {
+          "name": "AccountNeedsReauth"
+        },
+        {
+          "name": "UpstreamFailure"
+        }
+      ],
+      "description": "Procedure contract for at.skej.preview.createLink."
+    }
+  }
+}

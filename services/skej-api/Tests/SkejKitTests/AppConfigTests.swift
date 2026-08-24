@@ -1,4 +1,4 @@
-import SkejKit
+import SkejGateway
 import Testing
 
 @Suite

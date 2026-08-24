@@ -2,6 +2,7 @@ import Foundation
 import Hummingbird
 import HummingbirdTesting
 import HTTPTypes
+import SkejGateway
 import SkejKit
 import Testing
 
@@ -53,6 +54,10 @@ struct ProFeatureGateTests {
 
             let seed = try await capture(client, uri: "/v1/dev/seed", method: .post, headers: didHeaders("did:plc:me"))
             #expect(seed == unknownPost)
+
+            let unknownXRPC = try await capture(client, uri: "/xrpc/at.skej.unknown.method", method: .get, headers: didHeaders("did:plc:me"))
+            let gatedXRPC = try await capture(client, uri: "/xrpc/at.skej.team.list", method: .get, headers: didHeaders("did:plc:me"))
+            #expect(gatedXRPC == unknownXRPC)
         }
     }
 

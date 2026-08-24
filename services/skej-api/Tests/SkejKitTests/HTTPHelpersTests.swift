@@ -1,7 +1,8 @@
 import Foundation
 import Hummingbird
 import HTTPTypes
-@testable import SkejKit
+@testable import SkejGateway
+import SkejKit
 import Testing
 
 @Suite

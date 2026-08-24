@@ -1,0 +1,80 @@
+{
+  "lexicon": 1,
+  "id": "at.skej.team.putMember",
+  "defs": {
+    "main": {
+      "type": "procedure",
+      "input": {
+        "encoding": "application/json",
+        "schema": {
+          "type": "object",
+          "required": [
+            "teamRkey",
+            "memberDid",
+            "role"
+          ],
+          "properties": {
+            "teamRkey": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 512
+            },
+            "memberDid": {
+              "type": "string",
+              "format": "did"
+            },
+            "role": {
+              "type": "string",
+              "knownValues": [
+                "admin",
+                "user"
+              ],
+              "maxLength": 8192
+            },
+            "status": {
+              "type": "string",
+              "knownValues": [
+                "active",
+                "disabled"
+              ],
+              "maxLength": 8192
+            },
+            "groupUris": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "format": "at-uri"
+              },
+              "maxLength": 1000
+            }
+          }
+        }
+      },
+      "output": {
+        "encoding": "application/json",
+        "schema": {
+          "type": "ref",
+          "ref": "at.skej.defs#memberSummary"
+        }
+      },
+      "errors": [
+        {
+          "name": "AuthRequired"
+        },
+        {
+          "name": "InvalidRequest"
+        },
+        {
+          "name": "Forbidden"
+        },
+        {
+          "name": "NotFound"
+        },
+        {
+          "name": "AccountNeedsReauth"
+        }
+      ],
+      "description": "Procedure contract for at.skej.team.putMember."
+    }
+  }
+}

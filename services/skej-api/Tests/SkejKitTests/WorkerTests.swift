@@ -52,6 +52,41 @@ struct WorkerTests {
         #expect(job?.status == .published)
         #expect(publishedRecord?.status == .published)
         #expect(publishedRecord?.publishedUri == job?.publishedUri)
+        #expect(publishedRecord?.publishedPosts.count == 1)
+        #expect(publishedRecord?.publishedPosts.first?.uri == publishedRecord?.publishedUri)
+        #expect(publishedRecord?.publishedPosts.first?.cid == publishedRecord?.publishedCid)
+    }
+
+    @Test func workerAssignsAndPersistsStableRkeysForEveryThreadPost() async throws {
+        let store = try SQLiteStore(path: ":memory:")
+        try await store.migrate()
+        let pds = InMemoryPDSClient()
+        var record = makeRecord(scheduledFor: "2026-01-01T10:00:00Z")
+        record.posts = [PostPlan(text: "one"), PostPlan(text: "two"), PostPlan(text: "three")]
+        try await pds.writeSchedule(did: "did:plc:test", rkey: "3lthread", record: record)
+        try await store.upsertScheduleJob(
+            ScheduledJob(
+                did: "did:plc:test",
+                rkey: "3lthread",
+                scheduledAt: record.scheduledAt,
+                status: .scheduled,
+                attempts: 0,
+                publishRkey: record.publishRkey
+            ),
+            now: "2026-01-01T09:00:00Z"
+        )
+        let worker = ScheduleWorker(store: store, pdsClient: pds, logger: Logger(label: "test"))
+
+        await worker.runTick(now: ISO8601DateFormatter().date(from: "2026-01-01T10:00:01Z")!)
+
+        let published = try await pds.getSchedule(did: "did:plc:test", rkey: "3lthread")
+        let postRkeys = published?.posts.compactMap(\.publishRkey) ?? []
+        #expect(postRkeys.count == 3)
+        #expect(Set(postRkeys).count == 3)
+        #expect(postRkeys.allSatisfy(ATProtoTID.isValid))
+        #expect(published?.publishedPosts.map(\.rkey) == postRkeys)
+        #expect(published?.publishRkey == postRkeys.first)
+        #expect(published?.publishedUri == published?.publishedPosts.first?.uri)
     }
 
     @Test func workerUpgradesLegacyPublishRkeyToTID() async throws {
@@ -168,6 +203,15 @@ struct WorkerTests {
         #expect(job?.nextAttemptAt != nil)
         #expect(failedRecord?.status == .scheduled)
         #expect(failedRecord?.lastError != nil)
+
+        let stableRkeys = failedRecord?.posts.compactMap(\.publishRkey) ?? []
+        await pds.setShouldFailPublish(false)
+        await worker.runTick(now: ISO8601DateFormatter().date(from: "2026-01-01T12:00:01Z")!)
+
+        let recovered = try await pds.getSchedule(did: "did:plc:test", rkey: "3lfail")
+        #expect(recovered?.status == .published)
+        #expect(recovered?.posts.compactMap(\.publishRkey) == stableRkeys)
+        #expect(recovered?.publishedPosts.map(\.rkey) == stableRkeys)
     }
 
     @Test func workerFailsAfterMaxTransientAttempts() async throws {
@@ -241,6 +285,7 @@ struct WorkerTests {
         var parent = makeRecord(scheduledFor: "2026-01-01T09:00:00Z")
         parent.status = .published
         parent.publishedUri = "at://did:plc:test/app.bsky.feed.post/parent"
+        parent.publishedCid = "bafyparent"
         try await store.writeScheduleRecord(
             did: "did:plc:test",
             rkey: "3lparent",
@@ -250,7 +295,8 @@ struct WorkerTests {
         var child = makeRecord(scheduledFor: "2026-01-01T10:00:00Z")
         child.status = .blocked
         child.dependency = ScheduleDependency(
-            dependsOnScheduleUri: "at://did:plc:test/at.skej.schedule/3lparent"
+            dependsOnScheduleUri: "at://did:plc:test/at.skej.schedule/3lparent",
+            relationship: .reply
         )
         try await pds.writeSchedule(did: "did:plc:test", rkey: "3lchild", record: child)
         try await store.upsertScheduleJob(
@@ -274,6 +320,7 @@ struct WorkerTests {
         #expect(job?.status == .scheduled)
         #expect(unblockedRecord?.status == .scheduled)
         #expect(unblockedRecord?.dependency?.parentPublishedUri == parent.publishedUri)
+        #expect(unblockedRecord?.dependency?.parentPublishedCid == parent.publishedCid)
     }
 }
 

@@ -1,10 +1,10 @@
-import { firstHTTPURL } from "@/lib/editor";
+import { firstPostLinkURL } from "@/lib/editor";
 import type { PostPlan } from "@/lib/skejTypes";
 
 export const LINK_PREVIEW_DEBOUNCE_MS = 500;
 
 export function automaticLinkPreviewURL(post: PostPlan) {
-  const url = firstHTTPURL(post.text);
+  const url = firstPostLinkURL(post);
   if (!url || post.embed?.images?.length || post.embed?.record) return null;
   return url;
 }
@@ -29,7 +29,7 @@ export function shouldRemoveAutomaticLinkPreview(
 ) {
   return (
     automaticURL !== undefined &&
-    firstHTTPURL(post.text) !== automaticURL &&
+    firstPostLinkURL(post) !== automaticURL &&
     post.embed?.external?.uri === automaticURL
   );
 }
