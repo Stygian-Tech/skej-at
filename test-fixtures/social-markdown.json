@@ -33,6 +33,19 @@
       ]
     },
     {
+      "name": "labeled-link-replaces-a-link-shaped-label-facet",
+      "source": "[https://shown.example](https://target.example)",
+      "text": "https://shown.example",
+      "facets": [
+        {
+          "byteStart": 0,
+          "byteEnd": 21,
+          "type": "link",
+          "value": "https://target.example"
+        }
+      ]
+    },
+    {
       "name": "bare-link-keeps-visible-punctuation",
       "source": "See https://example.com/docs_(v2)).",
       "text": "See https://example.com/docs_(v2)).",
@@ -50,6 +63,19 @@
       "source": "\\*\\*literal\\*\\* and \\[brackets\\] and \\`ticks\\`",
       "text": "**literal** and [brackets] and `ticks`",
       "facets": []
+    },
+    {
+      "name": "escaped-hashtag-does-not-create-a-facet",
+      "source": "\\#literal #linked",
+      "text": "#literal #linked",
+      "facets": [
+        {
+          "byteStart": 9,
+          "byteEnd": 16,
+          "type": "tag",
+          "value": "linked"
+        }
+      ]
     },
     {
       "name": "structural-cues-and-crlf",
@@ -99,6 +125,18 @@
       "name": "unsafe-link-schemes-are-literal",
       "source": "[do not run](javascript:alert(1)) and [mail](mailto:test@example.com)",
       "text": "[do not run](javascript:alert(1)) and [mail](mailto:test@example.com)",
+      "facets": []
+    },
+    {
+      "name": "unsafe-link-does-not-create-a-facet-from-its-destination",
+      "source": "[bad](javascript:https://evil.example)",
+      "text": "[bad](javascript:https://evil.example)",
+      "facets": []
+    },
+    {
+      "name": "empty-link-label-is-literal",
+      "source": "[](https://example.com)",
+      "text": "[](https://example.com)",
       "facets": []
     },
     {

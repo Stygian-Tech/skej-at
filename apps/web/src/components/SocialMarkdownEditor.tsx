@@ -24,8 +24,6 @@ import {
 import type { PostPlan } from "@/lib/skejTypes";
 import { cn } from "@/lib/utils";
 
-type EditorMode = "write" | "preview";
-
 interface SocialMarkdownEditorProps {
   index: number;
   post: PostPlan;
@@ -105,7 +103,6 @@ export const SocialMarkdownEditor = React.memo(function SocialMarkdownEditor({
   post,
   onChange,
 }: SocialMarkdownEditorProps) {
-  const [mode, setMode] = React.useState<EditorMode>("write");
   const textareaRef = React.useRef<HTMLTextAreaElement>(null);
   const pendingSelection = React.useRef<{ start: number; end: number } | null>(null);
   const source = markdownSourceForPost(post);
@@ -153,81 +150,61 @@ export const SocialMarkdownEditor = React.memo(function SocialMarkdownEditor({
   return (
     <div className="grid min-w-0 gap-2">
       <div className="flex flex-wrap items-center justify-between gap-2">
-        <div
-          aria-label={`Post ${index + 1} editor mode`}
-          className="flex rounded-full bg-muted p-1"
-          role="tablist"
-        >
-          {(["write", "preview"] as const).map((item) => (
-            <button
-              aria-controls={`post-${index + 1}-${item}`}
-              aria-selected={mode === item}
-              className={cn(
-                "min-h-9 rounded-full px-3 text-xs font-black capitalize transition",
-                mode === item ? "bg-card text-foreground shadow-sm" : "text-muted-foreground"
-              )}
-              id={`post-${index + 1}-${item}-tab`}
-              key={item}
-              onClick={() => setMode(item)}
-              role="tab"
-              type="button"
-            >
-              {item}
-            </button>
-          ))}
-        </div>
+        <span className="text-xs font-black text-foreground">Markdown</span>
         <span className="text-xs font-semibold text-muted-foreground">
-          Preview is the exact Bluesky text.
+          Links must start with http:// or https://.
         </span>
       </div>
 
-      {mode === "write" ? (
-        <div
-          aria-labelledby={`post-${index + 1}-write-tab`}
-          className="grid min-w-0 gap-2"
-          id={`post-${index + 1}-write`}
-          role="tabpanel"
-        >
-          <div aria-label="Markdown formatting" className="flex flex-wrap gap-1" role="toolbar">
-            {COMMANDS.map(({ command, label, icon: Icon, shortcut }) => (
-              <Button
-                aria-label={label}
-                key={command}
-                onMouseDown={(event) => event.preventDefault()}
-                onClick={() => applyCommand(command)}
-                size="icon"
-                title={shortcut ? `${label} (${shortcut})` : label}
-                type="button"
-                variant="ghost"
-              >
-                <Icon />
-              </Button>
-            ))}
-          </div>
-          <Textarea
-            aria-label={`Post ${index + 1} Markdown`}
-            onChange={(event) => updateSource(event.target.value)}
-            onKeyDown={(event) => {
-              const command = shortcutCommand(event);
-              if (!command) return;
-              event.preventDefault();
-              applyCommand(command);
-            }}
-            placeholder="What should future-you say? Markdown links and lightweight formatting are supported."
-            ref={textareaRef}
-            value={source}
-          />
+      <div className="grid min-w-0 gap-2">
+        <div aria-label="Markdown formatting" className="flex flex-wrap gap-1" role="toolbar">
+          {COMMANDS.map(({ command, label, icon: Icon, shortcut }) => (
+            <Button
+              aria-label={label}
+              key={command}
+              onMouseDown={(event) => event.preventDefault()}
+              onClick={() => applyCommand(command)}
+              size="icon"
+              title={shortcut ? `${label} (${shortcut})` : label}
+              type="button"
+              variant="ghost"
+            >
+              <Icon />
+            </Button>
+          ))}
         </div>
-      ) : (
-        <SocialMarkdownPreview
-          aria-labelledby={`post-${index + 1}-preview-tab`}
-          className="min-h-28 whitespace-pre-wrap break-words rounded-[1.5rem] border border-input bg-card px-4 py-3 text-base font-semibold leading-7"
-          emptyMessage="Nothing to preview yet."
-          id={`post-${index + 1}-preview`}
-          post={projection}
-          role="tabpanel"
+        <Textarea
+          aria-describedby={`post-${index + 1}-bluesky-output-label`}
+          aria-label={`Post ${index + 1} Markdown`}
+          onChange={(event) => updateSource(event.target.value)}
+          onKeyDown={(event) => {
+            const command = shortcutCommand(event);
+            if (!command) return;
+            event.preventDefault();
+            applyCommand(command);
+          }}
+          placeholder="What should future-you say? Markdown links and lightweight formatting are supported."
+          ref={textareaRef}
+          value={source}
         />
-      )}
+      </div>
+
+      <div className="grid min-w-0 gap-1.5">
+        <div
+          className="flex flex-wrap items-center justify-between gap-2 px-1 text-xs font-semibold text-muted-foreground"
+          id={`post-${index + 1}-bluesky-output-label`}
+        >
+          <span className="font-black text-foreground">Bluesky output</span>
+          <span>Formatting is projected inline; links stay clickable.</span>
+        </div>
+        <SocialMarkdownPreview
+          aria-labelledby={`post-${index + 1}-bluesky-output-label`}
+          className="min-h-16 whitespace-pre-wrap break-words rounded-[1.25rem] border border-input bg-card px-4 py-3 text-base font-semibold leading-7"
+          emptyMessage="Your published text will appear here."
+          id={`post-${index + 1}-bluesky-output`}
+          post={projection}
+        />
+      </div>
     </div>
   );
 });

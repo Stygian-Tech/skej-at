@@ -81,11 +81,12 @@ public enum SocialMarkdownCompiler {
 
             if source[index] == "[", let syntax = linkSyntax(startingAt: index, in: source) {
                 let destination = String(source[syntax.destination]).trimmingCharacters(in: .whitespaces)
-                if isSafeHTTPURL(destination) {
+                if !source[syntax.label].isEmpty, isSafeHTTPURL(destination) {
                     let start = buffer.utf8Count
                     compileInline(source[syntax.label], into: &buffer)
                     let end = buffer.utf8Count
                     if start < end {
+                        buffer.removeFacets(overlapping: start..<end)
                         buffer.appendLinkFacet(byteStart: start, byteEnd: end, uri: destination)
                     }
                 } else {
@@ -407,6 +408,13 @@ private struct CompilationBuffer {
                 ]),
             ]),
         ]))
+    }
+
+    mutating func removeFacets(overlapping range: Range<Int>) {
+        facets.removeAll { facet in
+            guard let existing = Self.byteRange(facet) else { return true }
+            return existing.overlaps(range)
+        }
     }
 
     mutating func sortFacets() {

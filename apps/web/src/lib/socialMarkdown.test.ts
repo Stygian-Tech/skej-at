@@ -72,11 +72,34 @@ describe("social Markdown commands", () => {
     ).toBe("one\ntwo");
   });
 
-  it("inserts a selected label and selects the URL placeholder", () => {
+  it("inserts a selected label, keeps a safe scheme, and selects the hostname", () => {
     expect(applySocialMarkdownCommand("Read docs", "link", 5, 9)).toEqual({
-      text: "Read [docs](https://)",
-      selectionStart: 12,
-      selectionEnd: 20,
+      text: "Read [docs](https://example.com)",
+      selectionStart: 20,
+      selectionEnd: 31,
+    });
+  });
+
+  it("compiles the result of replacing the selected hostname into hypertext", () => {
+    const command = applySocialMarkdownCommand("Read docs", "link", 5, 9);
+    const source =
+      command.text.slice(0, command.selectionStart) +
+      "skej.at" +
+      command.text.slice(command.selectionEnd);
+
+    expect(compileSocialMarkdown(source)).toEqual({
+      text: "Read docs",
+      facets: [
+        {
+          index: { byteStart: 5, byteEnd: 9 },
+          features: [
+            {
+              $type: "app.bsky.richtext.facet#link",
+              uri: "https://skej.at",
+            },
+          ],
+        },
+      ],
     });
   });
 });

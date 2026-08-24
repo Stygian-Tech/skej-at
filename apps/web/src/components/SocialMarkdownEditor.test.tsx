@@ -116,17 +116,30 @@ describe("SocialMarkdownEditor", () => {
       <SocialMarkdownEditor index={0} onChange={() => undefined} post={post} />
     );
 
-    const previewTab = container.querySelector('button[role="tab"][aria-controls$="preview"]');
-    if (!previewTab) throw new Error("Preview tab was not rendered");
-    await act(async () => click(previewTab));
-
-    const preview = container.querySelector('[role="tabpanel"]');
-    if (!preview) throw new Error("Preview panel was not rendered");
+    const preview = container.querySelector('[id="post-1-bluesky-output"]');
+    if (!preview) throw new Error("Inline Bluesky output was not rendered");
     const link = preview.querySelector("a");
     expect(preview.textContent).toBe("👋 Open Skej");
     expect(link?.textContent).toBe("Open Skej");
     expect(link?.getAttribute("href")).toBe("https://skej.at");
     expect(link?.getAttribute("rel")).toContain("noopener");
+    expect(container.querySelector('[role="tablist"]')).toBeNull();
+  });
+
+  it("keeps the URL scheme when the Link toolbar command selects its hostname", async () => {
+    await render(<EditorPair />);
+    const textarea = container.querySelector("textarea");
+    const linkButton = container.querySelector('button[aria-label="Link"]');
+    if (!textarea || !linkButton) throw new Error("Link editor controls were not rendered");
+    textarea.setSelectionRange(0, 5);
+
+    await act(async () => click(linkButton));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(textarea.value).toBe("[first](https://example.com) post");
+    expect(textarea.value.slice(textarea.selectionStart, textarea.selectionEnd)).toBe(
+      "example.com"
+    );
   });
 
   it("keeps legacy literal Markdown until the author edits it", async () => {
@@ -134,10 +147,7 @@ describe("SocialMarkdownEditor", () => {
     await render(
       <SocialMarkdownEditor index={0} onChange={() => undefined} post={legacy} />
     );
-    const previewTab = container.querySelector('button[role="tab"][aria-controls$="preview"]');
-    if (!previewTab) throw new Error("Preview tab was not rendered");
-    await act(async () => click(previewTab));
-    expect(container.querySelector('[role="tabpanel"]')?.textContent).toBe(
+    expect(container.querySelector('[id="post-1-bluesky-output"]')?.textContent).toBe(
       "Keep **literal**"
     );
   });
