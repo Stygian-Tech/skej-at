@@ -151,7 +151,7 @@ export const SocialMarkdownEditor = React.memo(function SocialMarkdownEditor({
   );
 
   return (
-    <div className="grid gap-2">
+    <div className="grid min-w-0 gap-2">
       <div className="flex flex-wrap items-center justify-between gap-2">
         <div
           aria-label={`Post ${index + 1} editor mode`}
@@ -184,7 +184,7 @@ export const SocialMarkdownEditor = React.memo(function SocialMarkdownEditor({
       {mode === "write" ? (
         <div
           aria-labelledby={`post-${index + 1}-write-tab`}
-          className="grid gap-2"
+          className="grid min-w-0 gap-2"
           id={`post-${index + 1}-write`}
           role="tabpanel"
         >

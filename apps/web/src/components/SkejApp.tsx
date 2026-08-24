@@ -1110,8 +1110,8 @@ export function SkejApp() {
           </div>
         ) : null}
 
-        <section className="grid gap-5 lg:grid-cols-[minmax(0,1.05fr)_minmax(360px,0.75fr)]">
-          <div className="flex flex-col gap-5">
+        <section className="grid min-w-0 gap-5 lg:grid-cols-[minmax(0,1.05fr)_minmax(360px,0.75fr)]">
+          <div className="flex min-w-0 flex-col gap-5">
             {authStatus === "loading" ? (
               <Card>
                 <CardContent className="flex items-center gap-3 p-5 text-sm font-bold text-muted-foreground">
@@ -1226,7 +1226,7 @@ export function SkejApp() {
                       return (
                         <div
                           key={index}
-                          className="flex flex-col gap-2 rounded-[1.25rem] border border-border bg-background/60 p-2.5 sm:rounded-[1.5rem] sm:p-3"
+                          className="flex min-w-0 flex-col gap-2 rounded-[1.25rem] border border-border bg-background/60 p-2.5 sm:rounded-[1.5rem] sm:p-3"
                         >
                           <div className="flex items-center justify-between gap-2">
                             <span className="text-sm font-black">
@@ -1614,7 +1614,7 @@ export function SkejApp() {
             </div>
           </nav>
 
-          <aside className="flex flex-col gap-5">
+          <aside className="flex min-w-0 flex-col gap-5">
             <Card className="overflow-hidden">
               <CardHeader>
                 <div className="flex items-center justify-between gap-3">
