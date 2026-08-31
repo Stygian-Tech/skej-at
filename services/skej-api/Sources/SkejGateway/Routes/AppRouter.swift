@@ -27,6 +27,24 @@ public func buildRouter(services: SkejServices) -> Router<BasicRequestContext> {
     }
 
     router.get("oauth/start") { request, _ in
+        let purpose = OAuthPurpose(rawValue: request.uri.queryParameters.get("purpose") ?? OAuthPurpose.signIn.rawValue) ?? .signIn
+        let inviteToken = request.uri.queryParameters.get("inviteToken")
+        let returnTo = safeReturnPath(request.uri.queryParameters.get("returnTo"))
+        let initiatorDid: String?
+        switch purpose {
+        case .connectAccount, .brandConnection:
+            initiatorDid = try await authenticate(request, services: services).did
+        case .inviteAccept:
+            guard let inviteToken,
+                  let invite = try await services.store.teamInvite(token: inviteToken),
+                  invite.isPending(at: Timestamp.iso8601())
+            else {
+                throw APIError(status: .badRequest, code: "invalid_invite", message: "Invitation is invalid or expired")
+            }
+            initiatorDid = nil
+        case .signIn:
+            initiatorDid = nil
+        }
         let handle = (request.uri.queryParameters.get("handle") ?? "")
             .trimmingCharacters(in: .whitespacesAndNewlines)
         guard !handle.isEmpty else {
@@ -50,6 +68,10 @@ public func buildRouter(services: SkejServices) -> Router<BasicRequestContext> {
             tokenEndpoint: start.tokenEndpoint,
             pdsEndpoint: start.pdsEndpoint,
             dpopKeyJSON: start.dpopKeyJSON,
+            purpose: purpose,
+            initiatorDid: initiatorDid,
+            inviteToken: inviteToken,
+            returnTo: returnTo,
             expiresAt: Timestamp.iso8601(Date().addingTimeInterval(600))
         )
         var headers = HTTPFields()
@@ -69,7 +91,6 @@ public func buildRouter(services: SkejServices) -> Router<BasicRequestContext> {
             throw APIError(status: .badRequest, code: "invalid_state", message: "OAuth state expired or was already used")
         }
         let completion = try await services.oauthClient.complete(state: oauthState, code: code)
-        let session = randomToken()
         try await services.store.createOAuthSession(completion.session, now: now)
         try await services.store.upsertManagedAccount(
             ManagedAccount(
@@ -79,10 +100,51 @@ public func buildRouter(services: SkejServices) -> Router<BasicRequestContext> {
                 avatar: completion.viewer.avatar,
                 pdsEndpoint: oauthState.pdsEndpoint,
                 status: .active,
-                isDefault: true
+                isDefault: oauthState.purpose != .connectAccount && oauthState.purpose != .brandConnection
             ),
             now: now
         )
+        let accountOwnerDid = oauthState.initiatorDid ?? completion.viewer.did
+        try await services.store.upsertViewerAccount(ViewerAccountAccess(
+            viewerDid: accountOwnerDid,
+            accountDid: completion.viewer.did,
+            accessKind: accountOwnerDid == completion.viewer.did ? .owner : .connected,
+            capabilities: BrandCapability.allCases,
+            isDefault: accountOwnerDid == completion.viewer.did,
+            createdAt: now,
+            updatedAt: now
+        ))
+        if oauthState.purpose == .inviteAccept {
+            guard let token = oauthState.inviteToken,
+                  let invite = try await services.store.teamInvite(token: token),
+                  invite.isPending(at: now),
+                  inviteMatches(invite, viewer: completion.viewer)
+            else {
+                throw APIError(status: .forbidden, code: "invite_identity_mismatch", message: "This invitation is for a different account")
+            }
+            let memberRkey = completion.viewer.did.replacingOccurrences(of: ":", with: "_")
+            let member = TeamMemberRecord(
+                teamUri: invite.teamUri,
+                memberDid: completion.viewer.did,
+                role: invite.role,
+                status: .active,
+                createdAt: now,
+                updatedAt: now
+            )
+            try await services.pdsClient.writeRecord(
+                did: invite.ownerDid,
+                collection: "at.skej.team.member",
+                rkey: memberRkey,
+                record: member
+            )
+            try await services.store.updateTeamInvite(
+                id: invite.id,
+                ownerDid: invite.ownerDid,
+                status: .accepted,
+                acceptedDid: completion.viewer.did,
+                now: now
+            )
+        }
         try await services.store.insertAuditEvent(
             did: completion.viewer.did,
             scheduleRkey: nil,
@@ -90,19 +152,23 @@ public func buildRouter(services: SkejServices) -> Router<BasicRequestContext> {
             message: "Connected \(completion.viewer.handle ?? completion.viewer.did).",
             now: now
         )
-        try await services.store.createWebSession(
-            sessionID: session,
-            did: completion.viewer.did,
-            handle: completion.viewer.handle,
-            displayName: completion.viewer.displayName,
-            avatar: completion.viewer.avatar,
-            expiresAt: Timestamp.iso8601(Date().addingTimeInterval(60 * 60 * 24 * 30))
-        )
         var headers = HTTPFields()
-        headers[.location] = "/app"
-        let secure = services.config.environment == .local || services.config.environment == .test ? "" : "; Secure"
-        headers[HTTPField.Name("Set-Cookie")!] =
-            "skej_session=\(session); Path=/; HttpOnly; SameSite=Lax; Max-Age=2592000\(secure)"
+        let isConnection = oauthState.purpose == .connectAccount || oauthState.purpose == .brandConnection
+        headers[.location] = oauthState.returnTo ?? (isConnection ? "/app/admin" : "/app")
+        if !isConnection {
+            let session = randomToken()
+            try await services.store.createWebSession(
+                sessionID: session,
+                did: completion.viewer.did,
+                handle: completion.viewer.handle,
+                displayName: completion.viewer.displayName,
+                avatar: completion.viewer.avatar,
+                expiresAt: Timestamp.iso8601(Date().addingTimeInterval(60 * 60 * 24 * 30))
+            )
+            let secure = services.config.environment == .local || services.config.environment == .test ? "" : "; Secure"
+            headers[HTTPField.Name("Set-Cookie")!] =
+                "skej_session=\(session); Path=/; HttpOnly; SameSite=Lax; Max-Age=2592000\(secure)"
+        }
         return Response(status: .found, headers: headers)
     }
 
@@ -114,13 +180,14 @@ public func buildRouter(services: SkejServices) -> Router<BasicRequestContext> {
 
     v1.get("me") { request, _ in
         let viewer = try await authenticate(request, services: services)
+        let proEnabled = try await services.entitlementResolver.isProEnabled(for: viewer.did)
         return try jsonResponse(Viewer(
             did: viewer.did,
             handle: viewer.handle,
             displayName: viewer.displayName,
             avatar: viewer.avatar,
             defaultAccountDid: viewer.defaultAccountDid,
-            proFeaturesEnabled: services.config.proFeaturesEnabled
+            proFeaturesEnabled: proEnabled
         ))
     }
 
@@ -137,24 +204,20 @@ public func buildRouter(services: SkejServices) -> Router<BasicRequestContext> {
 
     v1.get("accounts") { request, _ in
         let viewer = try await authenticate(request, services: services)
-        var accounts = try await services.store.listManagedAccounts()
-        if !services.config.proFeaturesEnabled {
-            accounts = accounts.filter { $0.did == viewer.did || $0.did == viewer.defaultAccountDid }
-        }
-        return try jsonResponse(ListAccountsResponse(accounts: accounts))
+        return try jsonResponse(ListAccountsResponse(accounts: try await accessibleAccounts(for: viewer, services: services)))
     }
 
     // Skej Pro routes: never registered when the flag is off, so they are
     // indistinguishable from paths that don't exist.
     if services.config.proFeaturesEnabled {
         v1.get("teams") { request, _ in
-            let viewer = try await authenticate(request, services: services)
+            let viewer = try await authenticatePro(request, services: services)
             let teams = try await listVisibleTeams(viewer: viewer, services: services)
             return try jsonResponse(ListTeamsResponse(teams: teams))
         }
 
         v1.post("teams") { request, _ in
-            let viewer = try await authenticate(request, services: services)
+            let viewer = try await authenticatePro(request, services: services)
             let body = try await decodeJSONBody(request, as: CreateTeamRequest.self)
             let now = Timestamp.iso8601()
             let rkey = newRkey()
@@ -178,13 +241,13 @@ public func buildRouter(services: SkejServices) -> Router<BasicRequestContext> {
         }
 
         v1.get("teams/:teamRkey") { request, context in
-            let viewer = try await authenticate(request, services: services)
+            let viewer = try await authenticatePro(request, services: services)
             let team = try await requireVisibleTeam(rkey: try context.parameters.require("teamRkey"), viewer: viewer, services: services)
             return try jsonResponse(team)
         }
 
         v1.patch("teams/:teamRkey") { request, context in
-            let viewer = try await authenticate(request, services: services)
+            let viewer = try await authenticatePro(request, services: services)
             var team = try await requireTeamAdmin(rkey: try context.parameters.require("teamRkey"), viewer: viewer, services: services)
             let body = try await decodeJSONBody(request, as: UpdateTeamRequest.self)
             if let title = body.title {
@@ -200,7 +263,7 @@ public func buildRouter(services: SkejServices) -> Router<BasicRequestContext> {
         }
 
         v1.post("teams/:teamRkey/transfer-owner") { request, context in
-            let viewer = try await authenticate(request, services: services)
+            let viewer = try await authenticatePro(request, services: services)
             var team = try await requireOwnedTeam(rkey: try context.parameters.require("teamRkey"), viewer: viewer, services: services)
             let body = try await decodeJSONBody(request, as: TransferTeamOwnerRequest.self)
             team.record.ownerAdminDid = body.ownerAdminDid
@@ -210,13 +273,13 @@ public func buildRouter(services: SkejServices) -> Router<BasicRequestContext> {
         }
 
         v1.get("teams/:teamRkey/members") { request, context in
-            let viewer = try await authenticate(request, services: services)
+            let viewer = try await authenticatePro(request, services: services)
             let team = try await requireVisibleTeam(rkey: try context.parameters.require("teamRkey"), viewer: viewer, services: services)
             return try jsonResponse(ListMembersResponse(members: try await listTeamMembers(team: team, services: services)))
         }
 
         v1.post("teams/:teamRkey/members") { request, context in
-            let viewer = try await authenticate(request, services: services)
+            let viewer = try await authenticatePro(request, services: services)
             let team = try await requireTeamAdmin(rkey: try context.parameters.require("teamRkey"), viewer: viewer, services: services)
             let body = try await decodeJSONBody(request, as: UpsertMemberRequest.self)
             let now = Timestamp.iso8601()
@@ -235,7 +298,7 @@ public func buildRouter(services: SkejServices) -> Router<BasicRequestContext> {
         }
 
         v1.patch("teams/:teamRkey/members/:memberDid") { request, context in
-            let viewer = try await authenticate(request, services: services)
+            let viewer = try await authenticatePro(request, services: services)
             let team = try await requireTeamAdmin(rkey: try context.parameters.require("teamRkey"), viewer: viewer, services: services)
             let body = try await decodeJSONBody(request, as: UpsertMemberRequest.self)
             let memberDid = try context.parameters.require("memberDid")
@@ -259,13 +322,13 @@ public func buildRouter(services: SkejServices) -> Router<BasicRequestContext> {
         }
 
         v1.get("teams/:teamRkey/groups") { request, context in
-            let viewer = try await authenticate(request, services: services)
+            let viewer = try await authenticatePro(request, services: services)
             let team = try await requireVisibleTeam(rkey: try context.parameters.require("teamRkey"), viewer: viewer, services: services)
             return try jsonResponse(ListGroupsResponse(groups: try await listTeamGroups(team: team, services: services)))
         }
 
         v1.post("teams/:teamRkey/groups") { request, context in
-            let viewer = try await authenticate(request, services: services)
+            let viewer = try await authenticatePro(request, services: services)
             let team = try await requireTeamAdmin(rkey: try context.parameters.require("teamRkey"), viewer: viewer, services: services)
             let body = try await decodeJSONBody(request, as: UpsertGroupRequest.self)
             let now = Timestamp.iso8601()
@@ -275,6 +338,7 @@ public func buildRouter(services: SkejServices) -> Router<BasicRequestContext> {
                 name: body.name,
                 memberDids: body.memberDids ?? [],
                 brandGrantUris: body.brandGrantUris ?? [],
+                status: body.status ?? .active,
                 createdAt: now,
                 updatedAt: now
             )
@@ -283,7 +347,7 @@ public func buildRouter(services: SkejServices) -> Router<BasicRequestContext> {
         }
 
         v1.patch("teams/:teamRkey/groups/:groupRkey") { request, context in
-            let viewer = try await authenticate(request, services: services)
+            let viewer = try await authenticatePro(request, services: services)
             let team = try await requireTeamAdmin(rkey: try context.parameters.require("teamRkey"), viewer: viewer, services: services)
             let rkey = try context.parameters.require("groupRkey")
             let body = try await decodeJSONBody(request, as: UpsertGroupRequest.self)
@@ -294,6 +358,7 @@ public func buildRouter(services: SkejServices) -> Router<BasicRequestContext> {
                 name: body.name,
                 memberDids: body.memberDids ?? existing?.memberDids ?? [],
                 brandGrantUris: body.brandGrantUris ?? existing?.brandGrantUris ?? [],
+                status: body.status ?? existing?.status ?? .active,
                 createdAt: existing?.createdAt ?? now,
                 updatedAt: now
             )
@@ -302,13 +367,13 @@ public func buildRouter(services: SkejServices) -> Router<BasicRequestContext> {
         }
 
         v1.get("teams/:teamRkey/brand-grants") { request, context in
-            let viewer = try await authenticate(request, services: services)
+            let viewer = try await authenticatePro(request, services: services)
             let team = try await requireVisibleTeam(rkey: try context.parameters.require("teamRkey"), viewer: viewer, services: services)
             return try jsonResponse(ListBrandGrantsResponse(grants: try await listBrandGrants(team: team, services: services)))
         }
 
         v1.post("teams/:teamRkey/brand-grants") { request, context in
-            let viewer = try await authenticate(request, services: services)
+            let viewer = try await authenticatePro(request, services: services)
             let team = try await requireTeamAdmin(rkey: try context.parameters.require("teamRkey"), viewer: viewer, services: services)
             let body = try await decodeJSONBody(request, as: UpsertBrandGrantRequest.self)
             let now = Timestamp.iso8601()
@@ -319,6 +384,7 @@ public func buildRouter(services: SkejServices) -> Router<BasicRequestContext> {
                 granteeType: body.granteeType,
                 grantee: body.grantee,
                 capabilities: Array(Set(body.capabilities)),
+                status: body.status ?? .active,
                 createdAt: now,
                 updatedAt: now
             )
@@ -327,7 +393,7 @@ public func buildRouter(services: SkejServices) -> Router<BasicRequestContext> {
         }
 
         v1.patch("teams/:teamRkey/brand-grants/:grantRkey") { request, context in
-            let viewer = try await authenticate(request, services: services)
+            let viewer = try await authenticatePro(request, services: services)
             let team = try await requireTeamAdmin(rkey: try context.parameters.require("teamRkey"), viewer: viewer, services: services)
             let rkey = try context.parameters.require("grantRkey")
             let body = try await decodeJSONBody(request, as: UpsertBrandGrantRequest.self)
@@ -339,6 +405,7 @@ public func buildRouter(services: SkejServices) -> Router<BasicRequestContext> {
                 granteeType: body.granteeType,
                 grantee: body.grantee,
                 capabilities: Array(Set(body.capabilities)),
+                status: body.status ?? existing?.status ?? .active,
                 createdAt: existing?.createdAt ?? now,
                 updatedAt: now
             )
@@ -347,15 +414,16 @@ public func buildRouter(services: SkejServices) -> Router<BasicRequestContext> {
         }
 
         v1.get("teams/:teamRkey/brands") { request, context in
-            let viewer = try await authenticate(request, services: services)
+            let viewer = try await authenticatePro(request, services: services)
             let team = try await requireVisibleTeam(rkey: try context.parameters.require("teamRkey"), viewer: viewer, services: services)
             return try jsonResponse(ListBrandsResponse(brands: try await listBrands(team: team, services: services)))
         }
 
         v1.post("teams/:teamRkey/brands") { request, context in
-            let viewer = try await authenticate(request, services: services)
+            let viewer = try await authenticatePro(request, services: services)
             let team = try await requireTeamAdmin(rkey: try context.parameters.require("teamRkey"), viewer: viewer, services: services)
             let body = try await decodeJSONBody(request, as: UpsertBrandRequest.self)
+            try await requireCompletedBrandOAuth(did: body.brandDid, viewer: viewer, services: services)
             let now = Timestamp.iso8601()
             let rkey = body.brandDid.replacingOccurrences(of: ":", with: "_")
             let record = SkejBrandRecord(
@@ -371,9 +439,10 @@ public func buildRouter(services: SkejServices) -> Router<BasicRequestContext> {
         }
 
         v1.patch("teams/:teamRkey/brands/:brandDid") { request, context in
-            let viewer = try await authenticate(request, services: services)
+            let viewer = try await authenticatePro(request, services: services)
             let team = try await requireTeamAdmin(rkey: try context.parameters.require("teamRkey"), viewer: viewer, services: services)
             let brandDid = try context.parameters.require("brandDid")
+            try await requireCompletedBrandOAuth(did: brandDid, viewer: viewer, services: services)
             let body = try await decodeJSONBody(request, as: UpsertBrandRequest.self)
             guard brandDid == body.brandDid else {
                 throw APIError(status: .badRequest, code: "invalid_brand", message: "Brand DID mismatch")
@@ -395,7 +464,8 @@ public func buildRouter(services: SkejServices) -> Router<BasicRequestContext> {
 
         v1.get("brands/:did/profile") { request, context in
             let did = try context.parameters.require("did")
-            let viewer = try await authorize(did: did, request: request, services: services)
+            let viewer = try await authorizePro(did: did, request: request, services: services)
+            guard try await services.entitlementResolver.isProEnabled(for: viewer.did) else { throw HTTPError(.notFound) }
             _ = try await requireBrandCapability(.create, brandDid: did, viewer: viewer, services: services)
             let profile = try await services.pdsClient.getBrandProfile(did: did)
             return try jsonResponse(profile)
@@ -403,7 +473,8 @@ public func buildRouter(services: SkejServices) -> Router<BasicRequestContext> {
 
         v1.patch("brands/:did/profile") { request, context in
             let did = try context.parameters.require("did")
-            let viewer = try await authorize(did: did, request: request, services: services)
+            let viewer = try await authorizePro(did: did, request: request, services: services)
+            guard try await services.entitlementResolver.isProEnabled(for: viewer.did) else { throw HTTPError(.notFound) }
             _ = try await requireBrandCapability(.manage, brandDid: did, viewer: viewer, services: services)
             let body = try await decodeJSONBody(request, as: UpdateBrandProfileRequest.self)
             let profile = try await services.pdsClient.updateBrandProfile(did: did, profile: body)
@@ -483,7 +554,7 @@ public func buildRouter(services: SkejServices) -> Router<BasicRequestContext> {
         let rkey = try context.parameters.require("rkey")
         let viewer = try await authorize(did: did, request: request, services: services)
         _ = try await requireBrandCapability(.approve, brandDid: did, viewer: viewer, services: services)
-        return try await cancelSchedule(did: did, rkey: rkey, services: services)
+        return try await cancelSchedule(did: did, rkey: rkey, viewer: viewer, services: services)
     }
 
     v1.post("accounts/:did/schedules/:rkey/retry") { request, context in
@@ -491,7 +562,7 @@ public func buildRouter(services: SkejServices) -> Router<BasicRequestContext> {
         let rkey = try context.parameters.require("rkey")
         let viewer = try await authorize(did: did, request: request, services: services)
         _ = try await requireBrandCapability(.approve, brandDid: did, viewer: viewer, services: services)
-        return try await retrySchedule(did: did, rkey: rkey, services: services)
+        return try await retrySchedule(did: did, rkey: rkey, viewer: viewer, services: services)
     }
 
     v1.post("accounts/:did/schedules/:rkey/duplicate") { request, context in
@@ -499,7 +570,7 @@ public func buildRouter(services: SkejServices) -> Router<BasicRequestContext> {
         let rkey = try context.parameters.require("rkey")
         let viewer = try await authorize(did: did, request: request, services: services)
         _ = try await requireBrandCapability(.create, brandDid: did, viewer: viewer, services: services)
-        return try await duplicateSchedule(did: did, rkey: rkey, services: services)
+        return try await duplicateSchedule(did: did, rkey: rkey, viewer: viewer, services: services)
     }
 
     v1.post("accounts/:did/schedules/:rkey/publish-now") { request, context in
@@ -507,7 +578,7 @@ public func buildRouter(services: SkejServices) -> Router<BasicRequestContext> {
         let rkey = try context.parameters.require("rkey")
         let viewer = try await authorize(did: did, request: request, services: services)
         _ = try await requireBrandCapability(.approve, brandDid: did, viewer: viewer, services: services)
-        return try await publishNow(did: did, rkey: rkey, services: services)
+        return try await publishNow(did: did, rkey: rkey, viewer: viewer, services: services)
     }
 
     v1.post("accounts/:did/schedules/:rkey/view") { request, context in
@@ -555,14 +626,14 @@ public func buildRouter(services: SkejServices) -> Router<BasicRequestContext> {
         let viewer = try await authenticate(request, services: services)
         let rkey = try context.parameters.require("rkey")
         _ = try await requireBrandCapability(.approve, brandDid: viewer.defaultAccountDid ?? viewer.did, viewer: viewer, services: services)
-        return try await cancelSchedule(did: viewer.defaultAccountDid ?? viewer.did, rkey: rkey, services: services)
+        return try await cancelSchedule(did: viewer.defaultAccountDid ?? viewer.did, rkey: rkey, viewer: viewer, services: services)
     }
 
     v1.post("schedules/:rkey/publish-now") { request, context in
         let viewer = try await authenticate(request, services: services)
         let rkey = try context.parameters.require("rkey")
         _ = try await requireBrandCapability(.approve, brandDid: viewer.defaultAccountDid ?? viewer.did, viewer: viewer, services: services)
-        return try await publishNow(did: viewer.defaultAccountDid ?? viewer.did, rkey: rkey, services: services)
+        return try await publishNow(did: viewer.defaultAccountDid ?? viewer.did, rkey: rkey, viewer: viewer, services: services)
     }
 
     v1.post("dev/seed") { _, _ in
@@ -585,13 +656,14 @@ private func registerXRPCRoutes(
 
     xrpc.get(RouterPath(SkejXRPCMethod.getSession.nsid)) { request, _ in
         let viewer = try await authenticate(request, services: services)
+        let proEnabled = try await services.entitlementResolver.isProEnabled(for: viewer.did)
         return try jsonResponse(Viewer(
             did: viewer.did,
             handle: viewer.handle,
             displayName: viewer.displayName,
             avatar: viewer.avatar,
             defaultAccountDid: viewer.defaultAccountDid,
-            proFeaturesEnabled: services.config.proFeaturesEnabled
+            proFeaturesEnabled: proEnabled
         ))
     }
 
@@ -610,16 +682,53 @@ private func registerXRPCRoutes(
     xrpc.get(RouterPath(SkejXRPCMethod.listAccounts.nsid)) { request, _ in
         try validateXRPCQuery(request, allowed: [])
         let viewer = try await authenticate(request, services: services)
-        var accounts = try await services.store.listManagedAccounts()
-        if !services.config.proFeaturesEnabled {
-            accounts = accounts.filter { $0.did == viewer.did || $0.did == viewer.defaultAccountDid }
+        return try jsonResponse(ListAccountsResponse(accounts: try await accessibleAccounts(for: viewer, services: services)))
+    }
+
+    xrpc.get(RouterPath(SkejXRPCMethod.searchMentions.nsid)) { request, _ in
+        try validateXRPCQuery(request, allowed: ["q", "limit"])
+        _ = try await authenticate(request, services: services)
+        let query = (request.uri.queryParameters.get("q") ?? "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !query.isEmpty, query.count <= 64 else {
+            throw APIError(status: .badRequest, code: "InvalidRequest", message: "Mention query must be between 1 and 64 characters")
         }
-        return try jsonResponse(ListAccountsResponse(accounts: accounts))
+        let rawLimit = request.uri.queryParameters.get("limit")
+        guard rawLimit == nil || Int(rawLimit!) != nil else {
+            throw APIError(status: .badRequest, code: "InvalidRequest", message: "Mention limit must be an integer")
+        }
+        let limit = Int(rawLimit ?? "8") ?? 8
+        guard (1 ... 8).contains(limit) else {
+            throw APIError(status: .badRequest, code: "InvalidRequest", message: "Mention limit must be between 1 and 8")
+        }
+        return try jsonResponse(try await services.mentionSearchClient.search(query: query, limit: limit))
     }
 
     registerScheduleXRPCRoutes(on: xrpc, services: services, logger: logger)
     if services.config.proFeaturesEnabled {
         registerProXRPCRoutes(on: xrpc, services: services)
+        registerCalendarXRPCRoutes(on: xrpc, pdsClient: services.pdsClient) { request in
+            let viewer = try await authenticatePro(request, services: services)
+            return try await accessibleAccounts(for: viewer, services: services)
+        }
+        registerAnalyticsXRPCRoutes(on: xrpc, store: services.store) { request in
+            let viewer = try await authenticate(request, services: services)
+            guard try await services.entitlementResolver.isProEnabled(for: viewer.did) else {
+                throw HTTPError(.notFound)
+            }
+            let accounts = try await accessibleAccounts(for: viewer, services: services)
+            var analyticsAccounts: [ManagedAccount] = []
+            for account in accounts {
+                let permission = try await services.accountResolver.effectivePermission(
+                    for: viewer,
+                    brandDid: account.did
+                )
+                if permission?.capabilities.contains(.viewAnalytics) == true {
+                    analyticsAccounts.append(account)
+                }
+            }
+            return analyticsAccounts
+        }
     }
 
     // Hummingbird resolves an exact path registered for the other verb before
@@ -688,14 +797,14 @@ private func registerScheduleXRPCRoutes(
         let input = try await decodeXRPCBody(request, as: SkejScheduleParameters.self)
         let (viewer, did) = try await xrpcAccount(did: input.accountDid, request: request, services: services)
         _ = try await requireBrandCapability(.approve, brandDid: did, viewer: viewer, services: services)
-        return try await cancelSchedule(did: did, rkey: input.rkey, services: services)
+        return try await cancelSchedule(did: did, rkey: input.rkey, viewer: viewer, services: services)
     }
 
     xrpc.post(RouterPath(SkejXRPCMethod.publishNow.nsid)) { request, _ in
         let input = try await decodeXRPCBody(request, as: SkejScheduleParameters.self)
         let (viewer, did) = try await xrpcAccount(did: input.accountDid, request: request, services: services)
         _ = try await requireBrandCapability(.approve, brandDid: did, viewer: viewer, services: services)
-        return try await publishNow(did: did, rkey: input.rkey, services: services)
+        return try await publishNow(did: did, rkey: input.rkey, viewer: viewer, services: services)
     }
 
     xrpc.post(RouterPath(SkejXRPCMethod.createLinkPreview.nsid)) { request, _ in
@@ -721,13 +830,13 @@ private func registerProXRPCRoutes(
 ) {
     xrpc.get(RouterPath(SkejXRPCMethod.listTeams.nsid)) { request, _ in
         try validateXRPCQuery(request, allowed: [])
-        let viewer = try await authenticate(request, services: services)
+        let viewer = try await authenticatePro(request, services: services)
         return try jsonResponse(ListTeamsResponse(teams: try await listVisibleTeams(viewer: viewer, services: services)))
     }
 
     xrpc.get(RouterPath(SkejXRPCMethod.getTeam.nsid)) { request, _ in
         try validateXRPCQuery(request, allowed: ["teamRkey"])
-        let viewer = try await authenticate(request, services: services)
+        let viewer = try await authenticatePro(request, services: services)
         return try jsonResponse(try await requireVisibleTeam(
             rkey: try xrpcRequiredParameter(request, named: "teamRkey"),
             viewer: viewer,
@@ -736,7 +845,7 @@ private func registerProXRPCRoutes(
     }
 
     xrpc.post(RouterPath(SkejXRPCMethod.createTeam.nsid)) { request, _ in
-        let viewer = try await authenticate(request, services: services)
+        let viewer = try await authenticatePro(request, services: services)
         let input = try await decodeXRPCBody(request, as: CreateTeamRequest.self)
         let now = Timestamp.iso8601()
         let rkey = newRkey()
@@ -753,7 +862,7 @@ private func registerProXRPCRoutes(
     }
 
     xrpc.post(RouterPath(SkejXRPCMethod.updateTeam.nsid)) { request, _ in
-        let viewer = try await authenticate(request, services: services)
+        let viewer = try await authenticatePro(request, services: services)
         let input = try await decodeXRPCBody(request, as: SkejUpdateTeamInput.self)
         var team = try await requireTeamAdmin(rkey: input.teamRkey, viewer: viewer, services: services)
         if let title = input.title { team.record.title = title.trimmingCharacters(in: .whitespacesAndNewlines) }
@@ -765,7 +874,7 @@ private func registerProXRPCRoutes(
     }
 
     xrpc.post(RouterPath(SkejXRPCMethod.transferTeamOwner.nsid)) { request, _ in
-        let viewer = try await authenticate(request, services: services)
+        let viewer = try await authenticatePro(request, services: services)
         let input = try await decodeXRPCBody(request, as: SkejTransferTeamOwnerInput.self)
         var team = try await requireOwnedTeam(rkey: input.teamRkey, viewer: viewer, services: services)
         team.record.ownerAdminDid = input.ownerAdminDid
@@ -792,7 +901,7 @@ private func registerProXRPCRoutes(
     }
 
     xrpc.post(RouterPath(SkejXRPCMethod.putMember.nsid)) { request, _ in
-        let viewer = try await authenticate(request, services: services)
+        let viewer = try await authenticatePro(request, services: services)
         let input = try await decodeXRPCBody(request, as: SkejPutMemberInput.self)
         let team = try await requireTeamAdmin(rkey: input.teamRkey, viewer: viewer, services: services)
         let now = Timestamp.iso8601()
@@ -804,33 +913,34 @@ private func registerProXRPCRoutes(
     }
 
     xrpc.post(RouterPath(SkejXRPCMethod.putGroup.nsid)) { request, _ in
-        let viewer = try await authenticate(request, services: services)
+        let viewer = try await authenticatePro(request, services: services)
         let input = try await decodeXRPCBody(request, as: SkejPutGroupInput.self)
         let team = try await requireTeamAdmin(rkey: input.teamRkey, viewer: viewer, services: services)
         let now = Timestamp.iso8601()
         let rkey = input.groupRkey ?? newRkey()
         let existing = try await services.pdsClient.getRecord(did: teamOwnerDid(team.uri), collection: "at.skej.team.group", rkey: rkey, as: TeamGroupRecord.self)
-        let record = TeamGroupRecord(teamUri: team.uri, name: input.name, memberDids: input.memberDids ?? existing?.memberDids ?? [], brandGrantUris: input.brandGrantUris ?? existing?.brandGrantUris ?? [], createdAt: existing?.createdAt ?? now, updatedAt: now)
+        let record = TeamGroupRecord(teamUri: team.uri, name: input.name, memberDids: input.memberDids ?? existing?.memberDids ?? [], brandGrantUris: input.brandGrantUris ?? existing?.brandGrantUris ?? [], status: input.status ?? existing?.status ?? .active, createdAt: existing?.createdAt ?? now, updatedAt: now)
         try await services.pdsClient.writeRecord(did: teamOwnerDid(team.uri), collection: "at.skej.team.group", rkey: rkey, record: record)
         return try jsonResponse(TeamGroupSummary(rkey: rkey, uri: ATURI.record(did: teamOwnerDid(team.uri), collection: "at.skej.team.group", rkey: rkey), record: record))
     }
 
     xrpc.post(RouterPath(SkejXRPCMethod.putBrandGrant.nsid)) { request, _ in
-        let viewer = try await authenticate(request, services: services)
+        let viewer = try await authenticatePro(request, services: services)
         let input = try await decodeXRPCBody(request, as: SkejPutBrandGrantInput.self)
         let team = try await requireTeamAdmin(rkey: input.teamRkey, viewer: viewer, services: services)
         let now = Timestamp.iso8601()
         let rkey = input.grantRkey ?? newRkey()
         let existing = try await services.pdsClient.getRecord(did: teamOwnerDid(team.uri), collection: "at.skej.team.brandGrant", rkey: rkey, as: BrandGrantRecord.self)
-        let record = BrandGrantRecord(teamUri: team.uri, brandDid: input.brandDid, granteeType: input.granteeType, grantee: input.grantee, capabilities: Array(Set(input.capabilities)), createdAt: existing?.createdAt ?? now, updatedAt: now)
+        let record = BrandGrantRecord(teamUri: team.uri, brandDid: input.brandDid, granteeType: input.granteeType, grantee: input.grantee, capabilities: Array(Set(input.capabilities)), status: input.status ?? existing?.status ?? .active, createdAt: existing?.createdAt ?? now, updatedAt: now)
         try await services.pdsClient.writeRecord(did: teamOwnerDid(team.uri), collection: "at.skej.team.brandGrant", rkey: rkey, record: record)
         return try jsonResponse(BrandGrantSummary(rkey: rkey, uri: ATURI.record(did: teamOwnerDid(team.uri), collection: "at.skej.team.brandGrant", rkey: rkey), record: record))
     }
 
     xrpc.post(RouterPath(SkejXRPCMethod.putBrand.nsid)) { request, _ in
-        let viewer = try await authenticate(request, services: services)
+        let viewer = try await authenticatePro(request, services: services)
         let input = try await decodeXRPCBody(request, as: SkejPutBrandInput.self)
         let team = try await requireTeamAdmin(rkey: input.teamRkey, viewer: viewer, services: services)
+        try await requireCompletedBrandOAuth(did: input.brandDid, viewer: viewer, services: services)
         let now = Timestamp.iso8601()
         let rkey = input.brandDid.replacingOccurrences(of: ":", with: "_")
         let existing = try await services.pdsClient.getRecord(did: input.brandDid, collection: "at.skej.brand", rkey: rkey, as: SkejBrandRecord.self)
@@ -843,6 +953,7 @@ private func registerProXRPCRoutes(
         try validateXRPCQuery(request, allowed: ["did"])
         let did = try xrpcRequiredParameter(request, named: "did")
         let viewer = try await authorize(did: did, request: request, services: services)
+        guard try await services.entitlementResolver.isProEnabled(for: viewer.did) else { throw HTTPError(.notFound) }
         _ = try await requireBrandCapability(.create, brandDid: did, viewer: viewer, services: services)
         return try jsonResponse(try await services.pdsClient.getBrandProfile(did: did))
     }
@@ -850,26 +961,30 @@ private func registerProXRPCRoutes(
     xrpc.post(RouterPath(SkejXRPCMethod.updateBrandProfile.nsid)) { request, _ in
         let input = try await decodeXRPCBody(request, as: SkejUpdateBrandProfileInput.self)
         let viewer = try await authorize(did: input.did, request: request, services: services)
+        guard try await services.entitlementResolver.isProEnabled(for: viewer.did) else { throw HTTPError(.notFound) }
         _ = try await requireBrandCapability(.manage, brandDid: input.did, viewer: viewer, services: services)
         let update = UpdateBrandProfileRequest(displayName: input.displayName, description: input.description, avatar: input.avatar)
         return try jsonResponse(try await services.pdsClient.updateBrandProfile(did: input.did, profile: update))
     }
 
     xrpc.post(RouterPath(SkejXRPCMethod.retrySchedule.nsid)) { request, _ in
+        _ = try await authenticatePro(request, services: services)
         let input = try await decodeXRPCBody(request, as: SkejScheduleParameters.self)
         let (viewer, did) = try await xrpcAccount(did: input.accountDid, request: request, services: services)
         _ = try await requireBrandCapability(.approve, brandDid: did, viewer: viewer, services: services)
-        return try await retrySchedule(did: did, rkey: input.rkey, services: services)
+        return try await retrySchedule(did: did, rkey: input.rkey, viewer: viewer, services: services)
     }
 
     xrpc.post(RouterPath(SkejXRPCMethod.duplicateSchedule.nsid)) { request, _ in
+        _ = try await authenticatePro(request, services: services)
         let input = try await decodeXRPCBody(request, as: SkejScheduleParameters.self)
         let (viewer, did) = try await xrpcAccount(did: input.accountDid, request: request, services: services)
         _ = try await requireBrandCapability(.create, brandDid: did, viewer: viewer, services: services)
-        return try await duplicateSchedule(did: did, rkey: input.rkey, services: services)
+        return try await duplicateSchedule(did: did, rkey: input.rkey, viewer: viewer, services: services)
     }
 
     xrpc.post(RouterPath(SkejXRPCMethod.recordView.nsid)) { request, _ in
+        _ = try await authenticatePro(request, services: services)
         let input = try await decodeXRPCBody(request, as: SkejScheduleParameters.self)
         let (_, did) = try await xrpcAccount(did: input.accountDid, request: request, services: services)
         try await services.store.insertAuditEvent(did: did, scheduleRkey: input.rkey, action: "schedule_viewed", message: "Viewed schedule \(input.rkey).", now: Timestamp.iso8601())
@@ -877,9 +992,151 @@ private func registerProXRPCRoutes(
     }
 
     xrpc.get(RouterPath(SkejXRPCMethod.listAuditEvents.nsid)) { request, _ in
+        _ = try await authenticatePro(request, services: services)
         try validateXRPCQuery(request, allowed: ["accountDid"])
         let (_, did) = try await xrpcAccount(request: request, services: services)
         return try jsonResponse(ListAuditEventsResponse(events: try await services.store.listAuditEvents(did: did)))
+    }
+
+    xrpc.post(RouterPath(SkejXRPCMethod.setDefaultAccount.nsid)) { request, _ in
+        let viewer = try await authenticatePro(request, services: services)
+        let input = try await decodeXRPCBody(request, as: SkejRequiredAccountInput.self)
+        guard try await accessibleAccounts(for: viewer, services: services).contains(where: { $0.did == input.accountDid }) else {
+            throw APIError(status: .forbidden, code: "Forbidden", message: "Account is not accessible")
+        }
+        let now = Timestamp.iso8601()
+        let existing = try await services.store.viewerAccount(viewerDid: viewer.did, accountDid: input.accountDid)
+        let permission = try await services.accountResolver.effectivePermission(for: viewer, brandDid: input.accountDid)
+        try await services.store.upsertViewerAccount(ViewerAccountAccess(
+            viewerDid: viewer.did,
+            accountDid: input.accountDid,
+            accessKind: existing?.accessKind ?? (input.accountDid == viewer.did ? .owner : .team),
+            teamUri: existing?.teamUri,
+            capabilities: existing?.capabilities ?? permission?.capabilities ?? [],
+            isDefault: true,
+            createdAt: existing?.createdAt ?? now,
+            updatedAt: now
+        ))
+        return try jsonResponse(OKResponse(ok: true))
+    }
+
+    xrpc.post(RouterPath(SkejXRPCMethod.disconnectAccount.nsid)) { request, _ in
+        let viewer = try await authenticatePro(request, services: services)
+        let input = try await decodeXRPCBody(request, as: SkejRequiredAccountInput.self)
+        guard input.accountDid != viewer.did,
+              let access = try await services.store.viewerAccount(viewerDid: viewer.did, accountDid: input.accountDid),
+              access.accessKind == .connected
+        else {
+            throw APIError(status: .badRequest, code: "InvalidRequest", message: "Only a connected account can be disconnected")
+        }
+        try await services.store.deleteViewerAccount(viewerDid: viewer.did, accountDid: input.accountDid)
+        return try jsonResponse(OKResponse(ok: true))
+    }
+
+    xrpc.get(RouterPath(SkejXRPCMethod.listInvites.nsid)) { request, _ in
+        try validateXRPCQuery(request, allowed: ["teamRkey"])
+        let viewer = try await authenticatePro(request, services: services)
+        let team = try await requireTeamAdmin(
+            rkey: try xrpcRequiredParameter(request, named: "teamRkey"),
+            viewer: viewer,
+            services: services
+        )
+        return try jsonResponse(ListTeamInvitesResponse(
+            invites: try await services.store.listTeamInvites(ownerDid: teamOwnerDid(team.uri), teamUri: team.uri)
+        ))
+    }
+
+    xrpc.post(RouterPath(SkejXRPCMethod.createInvite.nsid)) { request, _ in
+        let viewer = try await authenticatePro(request, services: services)
+        let input = try await decodeXRPCBody(request, as: SkejCreateInviteInput.self)
+        let team = try await requireTeamAdmin(rkey: input.teamRkey, viewer: viewer, services: services)
+        let invitedHandle = input.invitedHandle?.trimmingCharacters(in: CharacterSet(charactersIn: "@ "))
+        let invitedDid = input.invitedDid?.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard (invitedHandle?.isEmpty == false) != (invitedDid?.isEmpty == false) else {
+            throw APIError(status: .badRequest, code: "InvalidRequest", message: "Provide exactly one invited handle or DID")
+        }
+        let nowDate = Date()
+        let now = Timestamp.iso8601(nowDate)
+        let expiresAt = input.expiresAt ?? Timestamp.iso8601(nowDate.addingTimeInterval(60 * 60 * 24 * 7))
+        guard let expiry = Timestamp.date(from: expiresAt),
+              expiry > nowDate,
+              expiry <= nowDate.addingTimeInterval(60 * 60 * 24 * 30)
+        else {
+            throw APIError(status: .badRequest, code: "InvalidRequest", message: "Invitation expiry must be within 30 days")
+        }
+        let invite = TeamInvite(
+            id: UUID().uuidString,
+            token: randomToken(),
+            teamUri: team.uri,
+            teamTitle: team.record.title,
+            ownerDid: teamOwnerDid(team.uri),
+            invitedHandle: invitedHandle,
+            invitedDid: invitedDid,
+            role: input.role,
+            inviterDid: viewer.did,
+            createdAt: now,
+            expiresAt: expiresAt,
+            updatedAt: now
+        )
+        try await services.store.createTeamInvite(invite)
+        return try jsonResponse(invite)
+    }
+
+    xrpc.post(RouterPath(SkejXRPCMethod.revokeInvite.nsid)) { request, _ in
+        let viewer = try await authenticatePro(request, services: services)
+        let input = try await decodeXRPCBody(request, as: SkejRevokeInviteInput.self)
+        guard let invite = try await services.store.teamInvite(id: input.inviteId) else {
+            throw APIError(status: .notFound, code: "NotFound", message: "Invitation not found")
+        }
+        let teamRkey = invite.teamUri.split(separator: "/").last.map(String.init) ?? ""
+        _ = try await requireTeamAdmin(rkey: teamRkey, viewer: viewer, services: services)
+        guard invite.status == .pending else {
+            throw APIError(status: .badRequest, code: "InvalidRequest", message: "Only a pending invitation can be revoked")
+        }
+        try await services.store.updateTeamInvite(
+            id: invite.id,
+            ownerDid: invite.ownerDid,
+            status: .revoked,
+            now: Timestamp.iso8601()
+        )
+        return try jsonResponse(OKResponse(ok: true))
+    }
+
+    xrpc.get(RouterPath(SkejXRPCMethod.listEntitlements.nsid)) { request, _ in
+        try validateXRPCQuery(request, allowed: [])
+        let viewer = try await authenticate(request, services: services)
+        try services.entitlementResolver.requireAdministrator(viewer.did)
+        return try jsonResponse(ListProEntitlementsResponse(entitlements: try await services.store.listProEntitlements()))
+    }
+
+    xrpc.post(RouterPath(SkejXRPCMethod.putEntitlement.nsid)) { request, _ in
+        let viewer = try await authenticate(request, services: services)
+        try services.entitlementResolver.requireAdministrator(viewer.did)
+        let input = try await decodeXRPCBody(request, as: SkejPutEntitlementInput.self)
+        switch input.scope {
+        case .actor:
+            try SkejPayloadValidator.validateDID(input.subject)
+        case .team:
+            guard input.subject.starts(with: "at://"), input.subject.contains("/at.skej.team/") else {
+                throw APIError(status: .badRequest, code: "InvalidRequest", message: "Team entitlement subject must be an at.skej.team URI")
+            }
+        }
+        if let expiresAt = input.expiresAt, Timestamp.date(from: expiresAt) == nil {
+            throw APIError(status: .badRequest, code: "InvalidRequest", message: "expiresAt must be ISO 8601")
+        }
+        let now = Timestamp.iso8601()
+        let existing = try await services.store.proEntitlement(scope: input.scope, subject: input.subject)
+        let entitlement = ProEntitlement(
+            scope: input.scope,
+            subject: input.subject,
+            status: input.status,
+            grantedByDid: viewer.did,
+            expiresAt: input.expiresAt,
+            createdAt: existing?.createdAt ?? now,
+            updatedAt: now
+        )
+        try await services.store.upsertProEntitlement(entitlement)
+        return try jsonResponse(entitlement)
     }
 
     if services.config.environment != .prod {
@@ -893,7 +1150,7 @@ private func registerProXRPCRoutes(
 
 private func xrpcVisibleTeam(request: Request, services: SkejServices) async throws -> TeamSummary {
     try validateXRPCQuery(request, allowed: ["teamRkey"])
-    let viewer = try await authenticate(request, services: services)
+    let viewer = try await authenticatePro(request, services: services)
     return try await requireVisibleTeam(rkey: try xrpcRequiredParameter(request, named: "teamRkey"), viewer: viewer, services: services)
 }
 
@@ -904,7 +1161,8 @@ private func xrpcAccount(
 ) async throws -> (Viewer, String) {
     let viewer = try await authenticate(request, services: services)
     let selected = did ?? request.uri.queryParameters.get("accountDid") ?? viewer.defaultAccountDid ?? viewer.did
-    guard services.config.proFeaturesEnabled || selected == viewer.did || selected == viewer.defaultAccountDid else {
+    let accounts = try await accessibleAccounts(for: viewer, services: services)
+    guard accounts.contains(where: { $0.did == selected }) else {
         throw HTTPError(.notFound)
     }
     return (viewer, selected)
@@ -972,6 +1230,15 @@ private func seedDemoData(services: SkejServices) async throws {
     ]
     for account in accounts {
         try await services.store.upsertManagedAccount(account, now: nowString)
+    }
+    for did in accounts.map(\.did) {
+        try await services.store.upsertProEntitlement(ProEntitlement(
+            subject: did,
+            status: .active,
+            source: "development_seed",
+            createdAt: nowString,
+            updatedAt: nowString
+        ))
     }
 
     let team = SkejTeamRecord(
@@ -1318,6 +1585,7 @@ private func seedSchedule(
         record.publishedUri = record.publishedPosts.first?.uri
         record.publishedCid = record.publishedPosts.first?.cid
     }
+    record = try await writeCalendarEventFirst(did: did, rkey: rkey, record: record, services: services)
     try await services.pdsClient.writeSchedule(did: did, rkey: rkey, record: record)
     try await services.store.upsertScheduleJob(job(did: did, rkey: rkey, record: record, attempts: status == .failed ? 3 : 0), now: now)
 }
@@ -1354,8 +1622,10 @@ private func listSchedules(did: String, services: SkejServices) async throws -> 
 }
 
 private func createSchedule(did: String, body: CreateScheduleRequest, viewer: Viewer, services: SkejServices) async throws -> Response {
+    try await requireWriteAuthorization(did: did, viewer: viewer, services: services)
     var record = body.record
     coerceDraftWithoutProFeatures(&record, services: services)
+    try validateExplicitFacets(in: record)
     canonicalizeForPersistence(&record)
     try validate(record: record)
     let now = Timestamp.iso8601()
@@ -1370,6 +1640,7 @@ private func createSchedule(did: String, body: CreateScheduleRequest, viewer: Vi
         record.approvedAt = record.approvedAt ?? now
     }
     record.updatedAt = now
+    record = try await writeCalendarEventFirst(did: did, rkey: rkey, record: record, services: services)
     try await services.pdsClient.writeSchedule(did: did, rkey: rkey, record: record)
     let job = job(did: did, rkey: rkey, record: record)
     try await services.store.upsertScheduleJob(job, now: now)
@@ -1384,6 +1655,7 @@ private func createSchedule(did: String, body: CreateScheduleRequest, viewer: Vi
 }
 
 private func updateSchedule(did: String, rkey: String, body: CreateScheduleRequest, viewer: Viewer, services: SkejServices) async throws -> Response {
+    try await requireWriteAuthorization(did: did, viewer: viewer, services: services)
     let existing = try await services.store.scheduleJob(did: did, rkey: rkey)
     guard existing != nil else {
         throw APIError(status: .notFound, code: "not_found", message: "Schedule not found")
@@ -1391,6 +1663,7 @@ private func updateSchedule(did: String, rkey: String, body: CreateScheduleReque
     let existingRecord = try await services.pdsClient.getSchedule(did: did, rkey: rkey)
     var record = body.record
     coerceDraftWithoutProFeatures(&record, services: services)
+    try validateExplicitFacets(in: record)
     canonicalizeForPersistence(&record, preservingRkeysFrom: existingRecord?.posts)
     try validate(record: record)
     let now = Timestamp.iso8601()
@@ -1405,6 +1678,7 @@ private func updateSchedule(did: String, rkey: String, body: CreateScheduleReque
     record.createdByDid = record.createdByDid ?? existingRecord?.createdByDid ?? viewer.did
     record.publishRkey = record.publishRkey.isEmpty ? (existing?.publishRkey ?? ATProtoTID.generate()) : record.publishRkey
     record.updatedAt = now
+    record = try await writeCalendarEventFirst(did: did, rkey: rkey, record: record, services: services)
     try await services.pdsClient.writeSchedule(did: did, rkey: rkey, record: record)
     let updated = job(did: did, rkey: rkey, record: record, attempts: existing?.attempts ?? 0)
     try await services.store.upsertScheduleJob(updated, now: now)
@@ -1418,7 +1692,8 @@ private func updateSchedule(did: String, rkey: String, body: CreateScheduleReque
     return try jsonResponse(summary(job: updated, record: record))
 }
 
-private func cancelSchedule(did: String, rkey: String, services: SkejServices) async throws -> Response {
+private func cancelSchedule(did: String, rkey: String, viewer: Viewer, services: SkejServices) async throws -> Response {
+    try await requireWriteAuthorization(did: did, viewer: viewer, services: services)
     guard var record = try await services.pdsClient.getSchedule(did: did, rkey: rkey),
           let existing = try await services.store.scheduleJob(did: did, rkey: rkey)
     else {
@@ -1427,6 +1702,7 @@ private func cancelSchedule(did: String, rkey: String, services: SkejServices) a
     let now = Timestamp.iso8601()
     record.status = .canceled
     record.updatedAt = now
+    record = try await writeCalendarEventFirst(did: did, rkey: rkey, record: record, services: services)
     try await services.pdsClient.writeSchedule(did: did, rkey: rkey, record: record)
     var updated = existing
     updated.status = .canceled
@@ -1441,7 +1717,8 @@ private func cancelSchedule(did: String, rkey: String, services: SkejServices) a
     return try jsonResponse(summary(job: updated, record: record))
 }
 
-private func retrySchedule(did: String, rkey: String, services: SkejServices) async throws -> Response {
+private func retrySchedule(did: String, rkey: String, viewer: Viewer, services: SkejServices) async throws -> Response {
+    try await requireWriteAuthorization(did: did, viewer: viewer, services: services)
     guard var record = try await services.pdsClient.getSchedule(did: did, rkey: rkey),
           var existing = try await services.store.scheduleJob(did: did, rkey: rkey)
     else {
@@ -1455,6 +1732,7 @@ private func retrySchedule(did: String, rkey: String, services: SkejServices) as
     existing.status = .scheduled
     existing.lastError = nil
     existing.nextAttemptAt = nil
+    record = try await writeCalendarEventFirst(did: did, rkey: rkey, record: record, services: services)
     try await services.pdsClient.writeSchedule(did: did, rkey: rkey, record: record)
     try await services.store.upsertScheduleJob(existing, now: now)
     try await services.store.insertAuditEvent(
@@ -1467,7 +1745,8 @@ private func retrySchedule(did: String, rkey: String, services: SkejServices) as
     return try jsonResponse(summary(job: existing, record: record))
 }
 
-private func duplicateSchedule(did: String, rkey: String, services: SkejServices) async throws -> Response {
+private func duplicateSchedule(did: String, rkey: String, viewer: Viewer, services: SkejServices) async throws -> Response {
+    try await requireWriteAuthorization(did: did, viewer: viewer, services: services)
     guard var record = try await services.pdsClient.getSchedule(did: did, rkey: rkey) else {
         throw APIError(status: .notFound, code: "not_found", message: "Schedule not found")
     }
@@ -1482,6 +1761,9 @@ private func duplicateSchedule(did: String, rkey: String, services: SkejServices
     record.retry = RetryState()
     record.createdAt = now
     record.updatedAt = now
+    record.calendarEventUri = nil
+    record.calendarEventCid = nil
+    record = try await writeCalendarEventFirst(did: did, rkey: newRkey, record: record, services: services)
     try await services.pdsClient.writeSchedule(did: did, rkey: newRkey, record: record)
     let newJob = job(did: did, rkey: newRkey, record: record)
     try await services.store.upsertScheduleJob(newJob, now: now)
@@ -1495,7 +1777,8 @@ private func duplicateSchedule(did: String, rkey: String, services: SkejServices
     return try jsonResponse(summary(job: newJob, record: record), status: .created)
 }
 
-private func publishNow(did: String, rkey: String, services: SkejServices) async throws -> Response {
+private func publishNow(did: String, rkey: String, viewer: Viewer, services: SkejServices) async throws -> Response {
+    try await requireWriteAuthorization(did: did, viewer: viewer, services: services)
     guard var record = try await services.pdsClient.getSchedule(did: did, rkey: rkey),
           var existing = try await services.store.scheduleJob(did: did, rkey: rkey)
     else {
@@ -1503,6 +1786,21 @@ private func publishNow(did: String, rkey: String, services: SkejServices) async
     }
     let now = Timestamp.iso8601()
     canonicalizeForPersistence(&record)
+    let event: CommunityCalendarEventRecord
+    do {
+        event = try await CalendarCoordinator(pdsClient: services.pdsClient)
+            .requirePublishableEvent(did: did, rkey: rkey)
+    } catch {
+        throw APIError(
+            status: .conflict,
+            code: "CalendarEventInvalid",
+            message: "Publication is blocked until the authoritative calendar event is restored"
+        )
+    }
+    if event.startsAt != record.scheduledAt {
+        record.scheduledAt = event.startsAt
+        existing.scheduledAt = event.startsAt
+    }
     try await resolvePublishedDependency(&record, services: services)
     record.status = .publishing
     record.updatedAt = now
@@ -1532,7 +1830,27 @@ private func publishNow(did: String, rkey: String, services: SkejServices) async
     return try jsonResponse(summary(job: existing, record: record))
 }
 
-private struct BrandPermissionContext {
+private func writeCalendarEventFirst(
+    did: String,
+    rkey: String,
+    record: SkejScheduleRecord,
+    services: SkejServices
+) async throws -> SkejScheduleRecord {
+    let coordinator = CalendarCoordinator(pdsClient: services.pdsClient)
+    let previous = try await coordinator.event(did: did, rkey: rkey)
+    let result = try await coordinator.writeEventFirst(
+        did: did,
+        rkey: rkey,
+        schedule: record,
+        previous: previous
+    )
+    var projected = record
+    projected.calendarEventUri = result.reference.uri
+    projected.calendarEventCid = result.reference.cid
+    return projected
+}
+
+struct BrandPermissionContext {
     let teamUri: String?
     let capabilities: Set<BrandCapability>
 }
@@ -1665,30 +1983,12 @@ private func requireBrandCapability(
     try await requireAnyBrandCapability([capability], brandDid: brandDid, viewer: viewer, services: services)
 }
 
-private func brandPermissionContext(brandDid: String, viewer: Viewer, services: SkejServices) async throws -> BrandPermissionContext? {
-    let teams = try await listVisibleTeams(viewer: viewer, services: services)
-    for team in teams {
-        let grants = try await listBrandGrants(team: team, services: services).filter { $0.record.brandDid == brandDid }
-        guard !grants.isEmpty else { continue }
-        let member = try await activeMember(team: team, memberDid: viewer.did, services: services)
-        let groups = try await listTeamGroups(team: team, services: services)
-        let memberGroupUris = Set(member?.record.groupUris ?? [])
-        let matchingGroupUris = Set(groups.filter { group in
-            group.record.memberDids.contains(viewer.did) || memberGroupUris.contains(group.uri)
-        }.map(\.uri))
-        var capabilities = Set<BrandCapability>()
-        for grant in grants {
-            let appliesDirectly = grant.record.granteeType == .member && grant.record.grantee == viewer.did
-            let appliesThroughGroup = grant.record.granteeType == .group && matchingGroupUris.contains(grant.record.grantee)
-            if appliesDirectly || appliesThroughGroup {
-                capabilities.formUnion(grant.record.capabilities)
-            }
-        }
-        if !capabilities.isEmpty {
-            return BrandPermissionContext(teamUri: team.uri, capabilities: capabilities)
-        }
+func brandPermissionContext(brandDid: String, viewer: Viewer, services: SkejServices) async throws -> BrandPermissionContext? {
+    guard let permission = try await services.accountResolver.effectivePermission(for: viewer, brandDid: brandDid) else {
+        return nil
     }
-    return nil
+    let explicit = try await services.store.viewerAccount(viewerDid: viewer.did, accountDid: brandDid)
+    return BrandPermissionContext(teamUri: explicit?.teamUri, capabilities: Set(permission.capabilities))
 }
 
 private func teamOwnerDid(_ teamUri: String) -> String {
@@ -1706,7 +2006,7 @@ private func validate(team: SkejTeamRecord) throws {
     }
 }
 
-private func authenticate(_ request: Request, services: SkejServices) async throws -> Viewer {
+func authenticate(_ request: Request, services: SkejServices) async throws -> Viewer {
     if services.config.environment != .prod,
        let did = request.headers[HTTPField.Name("X-Skej-DID")!],
        !did.isEmpty
@@ -1725,6 +2025,16 @@ private func authenticate(_ request: Request, services: SkejServices) async thro
             ),
             now: Timestamp.iso8601()
         )
+        let now = Timestamp.iso8601()
+        try await services.store.upsertViewerAccount(ViewerAccountAccess(
+            viewerDid: did,
+            accountDid: did,
+            accessKind: .owner,
+            capabilities: BrandCapability.allCases,
+            isDefault: true,
+            createdAt: now,
+            updatedAt: now
+        ))
         return viewer
     }
     if let sessionID = cookie(named: "skej_session", in: request.headers[.cookie] ?? ""),
@@ -1733,6 +2043,14 @@ private func authenticate(_ request: Request, services: SkejServices) async thro
         return viewer
     }
     throw APIError(status: .unauthorized, code: "unauthorized", message: "Sign in required")
+}
+
+private func authenticatePro(_ request: Request, services: SkejServices) async throws -> Viewer {
+    let viewer = try await authenticate(request, services: services)
+    guard try await services.entitlementResolver.isProEnabled(for: viewer.did) else {
+        throw HTTPError(.notFound)
+    }
+    return viewer
 }
 
 // Without Pro, "draft" must behave like a status value that doesn't exist.
@@ -1749,10 +2067,46 @@ private func authorize(did: String, request: Request, services: SkejServices) as
     // Without Pro, other-account DIDs must be indistinguishable from routes that
     // don't exist, so this throws the same HTTPError the router emits for an
     // unmatched path rather than a forbidden error.
-    guard services.config.proFeaturesEnabled || viewer.did == did || viewer.defaultAccountDid == did else {
+    guard try await accessibleAccounts(for: viewer, services: services).contains(where: { $0.did == did }) else {
         throw HTTPError(.notFound)
     }
     return viewer
+}
+
+private func authorizePro(did: String, request: Request, services: SkejServices) async throws -> Viewer {
+    let viewer = try await authenticatePro(request, services: services)
+    guard try await accessibleAccounts(for: viewer, services: services).contains(where: { $0.did == did }) else {
+        throw HTTPError(.notFound)
+    }
+    return viewer
+}
+
+func accessibleAccounts(for viewer: Viewer, services: SkejServices) async throws -> [ManagedAccount] {
+    let isPro = try await services.entitlementResolver.isProEnabled(for: viewer.did)
+    if isPro {
+        return try await services.accountResolver.accessibleAccounts(for: viewer)
+    }
+    let own = try await services.store.managedAccount(did: viewer.did)
+        ?? ManagedAccount(did: viewer.did, handle: viewer.handle, displayName: viewer.displayName, avatar: viewer.avatar, isDefault: true)
+    return [own]
+}
+
+func requireCompletedBrandOAuth(did: String, viewer: Viewer, services: SkejServices) async throws {
+    guard try await services.accountResolver.effectivePermission(for: viewer, brandDid: did) != nil else {
+        throw APIError(status: .forbidden, code: "Forbidden", message: "Brand access is required")
+    }
+    guard try await services.store.oauthSession(did: did) != nil else {
+        throw APIError(
+            status: .conflict,
+            code: "AccountNeedsReauth",
+            message: "Connect or reconnect the brand account before writing on its behalf"
+        )
+    }
+}
+
+private func requireWriteAuthorization(did: String, viewer: Viewer, services: SkejServices) async throws {
+    guard did != viewer.did else { return }
+    try await requireCompletedBrandOAuth(did: did, viewer: viewer, services: services)
 }
 
 private func cookie(named name: String, in header: String) -> String? {
@@ -1764,6 +2118,29 @@ private func cookie(named name: String, in header: String) -> String? {
             pieces[1].trimmingCharacters(in: .whitespacesAndNewlines)
         )
     }.first { $0.0 == name }?.1
+}
+
+private func safeReturnPath(_ value: String?) -> String? {
+    guard let value,
+          value.starts(with: "/"),
+          !value.starts(with: "//"),
+          !value.contains("\\"),
+          URLComponents(string: value)?.host == nil
+    else { return nil }
+    return value
+}
+
+private func inviteMatches(_ invite: TeamInvite, viewer: Viewer) -> Bool {
+    if let invitedDid = invite.invitedDid { return invitedDid == viewer.did }
+    guard let invitedHandle = invite.invitedHandle,
+          let viewerHandle = viewer.handle
+    else { return false }
+    func normalized(_ handle: String) -> String {
+        handle.trimmingCharacters(in: CharacterSet(charactersIn: "@ "))
+            .lowercased()
+            .trimmingCharacters(in: CharacterSet(charactersIn: "."))
+    }
+    return normalized(invitedHandle) == normalized(viewerHandle)
 }
 
 private func validate(record: SkejScheduleRecord) throws {
@@ -1796,6 +2173,23 @@ private func validate(record: SkejScheduleRecord) throws {
         else {
             throw APIError(status: .badRequest, code: "invalid_post_publish_rkey", message: "Every post needs a unique AT Protocol publish rkey")
         }
+    }
+}
+
+private func validateExplicitFacets(in record: SkejScheduleRecord) throws {
+    do {
+        for post in record.posts {
+            try PostRecordCanonicalizer.validateExplicitFacets(in: post)
+        }
+        if let shadowRecord = record.shadowRecord {
+            try PostRecordCanonicalizer.validateExplicitFacets(inFeedPost: shadowRecord)
+        }
+    } catch is PostRecordValidationError {
+        throw APIError(
+            status: .badRequest,
+            code: "invalid_record",
+            message: "Post facets are malformed, stale, unsafe, or overlapping."
+        )
     }
 }
 

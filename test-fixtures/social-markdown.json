@@ -170,6 +170,69 @@
       "facets": []
     },
     {
+      "name": "resolved-mention-and-tag-after-utf8",
+      "source": "👋 @alice.test #skej",
+      "mentions": [
+        {
+          "handle": "alice.test",
+          "did": "did:plc:alice"
+        }
+      ],
+      "text": "👋 @alice.test #skej",
+      "facets": [
+        {
+          "byteStart": 5,
+          "byteEnd": 16,
+          "type": "mention",
+          "value": "did:plc:alice"
+        },
+        {
+          "byteStart": 17,
+          "byteEnd": 22,
+          "type": "tag",
+          "value": "skej"
+        }
+      ]
+    },
+    {
+      "name": "uppercase-http-scheme-is-native",
+      "source": "HTTPS://example.com",
+      "text": "HTTPS://example.com",
+      "facets": [
+        {
+          "byteStart": 0,
+          "byteEnd": 19,
+          "type": "link",
+          "value": "HTTPS://example.com"
+        }
+      ]
+    },
+    {
+      "name": "unicode-tag-limit-counts-graphemes",
+      "source": "#😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀",
+      "text": "#😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀",
+      "facets": [
+        {
+          "byteStart": 0,
+          "byteEnd": 161,
+          "type": "tag",
+          "value": "😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀"
+        }
+      ]
+    },
+    {
+      "name": "block-exclusion-variants-stay-literal",
+      "source": "+ [ ] see https://example.com #private\n###\tHeading https://example.com\n| partial https://example.com",
+      "text": "+ [ ] see https://example.com #private\n###\tHeading https://example.com\n| partial https://example.com",
+      "facets": []
+    },
+    {
+      "name": "whitespace-adjacent-emphasis-is-literal",
+      "source": "** bold** and **bold **",
+      "text": "** bold** and *bold *",
+      "facets": []
+    },
+    {
       "name": "projected-limit-exactly-300",
       "source": "**aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa**",
       "text": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",

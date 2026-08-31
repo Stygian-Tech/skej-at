@@ -290,6 +290,17 @@
         }
       }
     },
+    "calendarEvent": {
+      "type": "object",
+      "required": ["accountDid", "rkey", "uri", "record"],
+      "properties": {
+        "accountDid": { "type": "string", "format": "did" },
+        "rkey": { "type": "string", "maxLength": 8192 },
+        "uri": { "type": "string", "format": "at-uri" },
+        "cid": { "type": "string", "format": "cid" },
+        "record": { "type": "ref", "ref": "community.lexicon.calendar.event" }
+      }
+    },
     "auditEvent": {
       "type": "object",
       "required": [

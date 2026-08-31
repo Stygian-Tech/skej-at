@@ -10,9 +10,20 @@ const description = "Schedule posts from your PDS.";
 const lightInstallIcon = "/icons/skej-icon-light-512.png";
 const darkInstallIcon = "/icons/skej-icon-dark-512.png";
 const appleTouchIcon = "/icons/skej-apple-touch.png";
+const defaultSiteURL = new URL("https://skej.at");
+
+function metadataBaseURL(value: string | undefined): URL {
+  const candidate = value?.trim();
+  if (!candidate) return defaultSiteURL;
+  try {
+    return new URL(candidate);
+  } catch {
+    return defaultSiteURL;
+  }
+}
 
 export const metadata: Metadata = {
-  metadataBase: new URL(process.env.NEXT_PUBLIC_SITE_URL ?? "https://skej.at"),
+  metadataBase: metadataBaseURL(process.env.NEXT_PUBLIC_SITE_URL),
   applicationName: title,
   title: {
     default: title,

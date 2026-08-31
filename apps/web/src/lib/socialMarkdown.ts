@@ -1,4 +1,4 @@
-import type { PostPlan, RichFacet } from "@/lib/skejTypes";
+import type { PostPlan, ResolvedMention, RichFacet } from "@/lib/skejTypes";
 
 export type SocialMarkdownCommand =
   | "bold"
@@ -24,7 +24,10 @@ export interface MarkdownCommandResult {
 
 export interface ProjectionSegment {
   text: string;
+  kind?: "link" | "mention" | "tag";
   uri?: string;
+  did?: string;
+  tag?: string;
 }
 
 interface CompilationBuffer extends SocialMarkdownProjection {
@@ -35,9 +38,18 @@ const ESCAPABLE_MARKDOWN = /[\\`*{}\[\]()#+\-.!_>~]/u;
 const HTTP_URL_AT_START = /^https?:\/\/[^\s<>"']+/iu;
 const SIMPLE_TRAILING_PUNCTUATION = /[.,!?;:]+$/u;
 const TAG_SEPARATOR = /[\s\u00AD\u2060\u200A\u200B\u200C\u200D\u20E2]/u;
+const MENTION_AT_START = /^@([a-z0-9](?:[a-z0-9.-]{0,251}[a-z0-9])?)/iu;
 
 function byteLength(text: string): number {
   return new TextEncoder().encode(text).length;
+}
+
+function graphemeLength(text: string): number {
+  if (typeof Intl !== "undefined" && "Segmenter" in Intl) {
+    return Array.from(new Intl.Segmenter("en", { granularity: "grapheme" }).segment(text))
+      .length;
+  }
+  return Array.from(text).length;
 }
 
 function linkFacet(byteStart: number, byteEnd: number, uri: string): RichFacet {
@@ -51,6 +63,17 @@ function tagFacet(byteStart: number, byteEnd: number, tag: string): RichFacet {
   return {
     index: { byteStart, byteEnd },
     features: [{ $type: "app.bsky.richtext.facet#tag", tag }],
+  };
+}
+
+function mentionFacet(
+  byteStart: number,
+  byteEnd: number,
+  did: string
+): RichFacet {
+  return {
+    index: { byteStart, byteEnd },
+    features: [{ $type: "app.bsky.richtext.facet#mention", did }],
   };
 }
 
@@ -86,7 +109,12 @@ function trimBareURL(value: string): string {
   return candidate;
 }
 
-function findClosing(source: string, marker: string, start: number): number {
+function findClosing(
+  source: string,
+  marker: string,
+  start: number,
+  requireTight = false
+): number {
   let index = start;
   while (index < source.length) {
     const found = source.indexOf(marker, index);
@@ -99,7 +127,11 @@ function findClosing(source: string, marker: string, start: number): number {
     const next = source[found + marker.length] ?? "";
     const intrawordUnderscore =
       marker.includes("_") && /[\p{L}\p{N}]/u.test(previous) && /[\p{L}\p{N}]/u.test(next);
-    if (slashCount % 2 === 0 && !intrawordUnderscore) return found;
+    if (
+      slashCount % 2 === 0 &&
+      !intrawordUnderscore &&
+      (!requireTight || !/\s/u.test(previous))
+    ) return found;
     index = found + marker.length;
   }
   return -1;
@@ -258,7 +290,10 @@ function compileInline(source: string): CompilationBuffer {
             ? "`"
             : null;
     if (marker) {
-      const closing = findClosing(source, marker, index + marker.length);
+      const contentStart = index + marker.length;
+      const closing = /\s/u.test(source[contentStart] ?? "")
+        ? -1
+        : findClosing(source, marker, contentStart, true);
       if (closing > index + marker.length) {
         const content = source.slice(index + marker.length, closing);
         if (marker === "`") {
@@ -306,10 +341,49 @@ function addTagFacets(projection: CompilationBuffer): void {
     const suppressed = projection.suppressedFacetRanges.some(
       (range) => range.byteStart < byteEnd && range.byteEnd > byteStart
     );
-    if (body && body.length <= 64 && hasSubstance && !overlaps && !suppressed) {
+    if (body && graphemeLength(body) <= 64 && hasSubstance && !overlaps && !suppressed) {
       projection.facets.push(tagFacet(byteStart, byteEnd, body));
     }
     index = Math.max(end, index + 1);
+  }
+}
+
+function addMentionFacets(
+  projection: CompilationBuffer,
+  mentions: ResolvedMention[]
+): void {
+  const resolved = new Map(
+    mentions.map((mention) => [mention.handle.replace(/^@/u, "").toLowerCase(), mention.did])
+  );
+  if (resolved.size === 0) return;
+  let index = 0;
+  while (index < projection.text.length) {
+    const previous = projection.text[index - 1] ?? "";
+    const boundary = index === 0 || /[\s([{:>"']/u.test(previous);
+    const match = boundary ? projection.text.slice(index).match(MENTION_AT_START) : null;
+    if (!match?.[1]) {
+      index += 1;
+      continue;
+    }
+    const display = match[0];
+    const next = projection.text[index + display.length] ?? "";
+    if (/[a-z0-9.-]/iu.test(next)) {
+      index += display.length;
+      continue;
+    }
+    const did = resolved.get(match[1].toLowerCase());
+    const byteStart = byteLength(projection.text.slice(0, index));
+    const byteEnd = byteStart + byteLength(display);
+    const occupied = projection.facets.some(
+      (facet) => facet.index.byteStart < byteEnd && facet.index.byteEnd > byteStart
+    );
+    const suppressed = projection.suppressedFacetRanges.some(
+      (range) => range.byteStart < byteEnd && range.byteEnd > byteStart
+    );
+    if (did?.startsWith("did:") && !occupied && !suppressed) {
+      projection.facets.push(mentionFacet(byteStart, byteEnd, did));
+    }
+    index += display.length;
   }
 }
 
@@ -319,7 +393,10 @@ function addTagFacets(projection: CompilationBuffer): void {
  * remain in the text for clients that render them locally; unsupported Markdown
  * remains literal so the preview never promises a native facet that does not exist.
  */
-export function compileSocialMarkdown(source: string): SocialMarkdownProjection {
+export function compileSocialMarkdown(
+  source: string,
+  mentions: ResolvedMention[] = []
+): SocialMarkdownProjection {
   const normalized = source.replace(/\r\n?/gu, "\n");
   const lines = normalized.split("\n");
   const projection: CompilationBuffer = {
@@ -394,6 +471,7 @@ export function compileSocialMarkdown(source: string): SocialMarkdownProjection 
   });
 
   addTagFacets(projection);
+  addMentionFacets(projection, mentions);
   projection.facets.sort((left, right) => left.index.byteStart - right.index.byteStart);
   return { text: projection.text, facets: projection.facets };
 }
@@ -405,7 +483,7 @@ export function markdownSourceForPost(post: PostPlan): string {
 export function projectMarkdownPost(post: PostPlan): PostPlan {
   if (post.source?.format !== "markdown") return post;
   const sourceText = markdownSourceForPost(post);
-  const rawProjection = compileSocialMarkdown(sourceText);
+  const rawProjection = compileSocialMarkdown(sourceText, post.source.mentions ?? []);
   const leadingWhitespace = rawProjection.text.match(/^\s*/u)?.[0] ?? "";
   const text = rawProjection.text.trim();
   const leadingBytes = byteLength(leadingWhitespace);
@@ -425,7 +503,11 @@ export function projectMarkdownPost(post: PostPlan): PostPlan {
     }));
   return {
     ...post,
-    source: { format: "markdown", text: sourceText },
+    source: {
+      format: "markdown",
+      text: sourceText,
+      mentions: post.source.mentions?.length ? post.source.mentions : undefined,
+    },
     text,
     facets: facets.length > 0 ? facets : undefined,
   };
@@ -573,25 +655,36 @@ function byteOffsetToStringIndex(text: string, byteOffset: number): number {
 export function projectionSegments(
   projection: Pick<SocialMarkdownProjection, "text" | "facets">
 ): ProjectionSegment[] {
-  const links = projection.facets
+  const nativeFacets = projection.facets
     .map((facet) => {
-      const feature = facet.features.find(
-        (candidate) => candidate.$type === "app.bsky.richtext.facet#link"
-      );
-      return feature?.$type === "app.bsky.richtext.facet#link"
-        ? { ...facet.index, uri: feature.uri }
-        : null;
+      const feature = facet.features[0];
+      if (feature?.$type === "app.bsky.richtext.facet#link") {
+        return { ...facet.index, kind: "link" as const, uri: feature.uri };
+      }
+      if (feature?.$type === "app.bsky.richtext.facet#mention") {
+        return { ...facet.index, kind: "mention" as const, did: feature.did };
+      }
+      if (feature?.$type === "app.bsky.richtext.facet#tag") {
+        return { ...facet.index, kind: "tag" as const, tag: feature.tag };
+      }
+      return null;
     })
-    .filter((link): link is { byteStart: number; byteEnd: number; uri: string } => link !== null)
+    .filter((facet): facet is NonNullable<typeof facet> => facet !== null)
     .sort((left, right) => left.byteStart - right.byteStart);
   const segments: ProjectionSegment[] = [];
   let cursor = 0;
-  for (const link of links) {
-    const start = byteOffsetToStringIndex(projection.text, link.byteStart);
-    const end = byteOffsetToStringIndex(projection.text, link.byteEnd);
+  for (const facet of nativeFacets) {
+    const start = byteOffsetToStringIndex(projection.text, facet.byteStart);
+    const end = byteOffsetToStringIndex(projection.text, facet.byteEnd);
     if (start < cursor || end <= start) continue;
     if (start > cursor) segments.push({ text: projection.text.slice(cursor, start) });
-    segments.push({ text: projection.text.slice(start, end), uri: link.uri });
+    segments.push({
+      text: projection.text.slice(start, end),
+      kind: facet.kind,
+      ...(facet.kind === "link" ? { uri: facet.uri } : {}),
+      ...(facet.kind === "mention" ? { did: facet.did } : {}),
+      ...(facet.kind === "tag" ? { tag: facet.tag } : {}),
+    });
     cursor = end;
   }
   if (cursor < projection.text.length) segments.push({ text: projection.text.slice(cursor) });

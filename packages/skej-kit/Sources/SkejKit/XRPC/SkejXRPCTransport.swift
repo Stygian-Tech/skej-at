@@ -90,6 +90,18 @@ public struct SkejXRPCClient: Sendable {
         try await query(.listAccounts, as: ListAccountsResponse.self)
     }
 
+    public func searchMentions(_ parameters: SkejSearchMentionsParameters) async throws -> SearchMentionsResponse {
+        let query = parameters.query.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !query.isEmpty, query.count <= 64, (1 ... 8).contains(parameters.limit) else {
+            throw SkejXRPCTransportError.invalidURL
+        }
+        return try await self.query(
+            .searchMentions,
+            parameters: ["q": query, "limit": String(parameters.limit)],
+            as: SearchMentionsResponse.self
+        )
+    }
+
     public func listTeams() async throws -> ListTeamsResponse {
         try await query(.listTeams, as: ListTeamsResponse.self)
     }
@@ -159,6 +171,27 @@ public struct SkejXRPCClient: Sendable {
     public func listSchedules(_ parameters: SkejAccountParameters = .init()) async throws -> ListSchedulesResponse {
         try validateOptionalDID(parameters.accountDid)
         return try await query(.listSchedules, parameters: optionalAccount(parameters.accountDid), as: ListSchedulesResponse.self)
+    }
+
+    public func listCalendar(_ parameters: SkejCalendarParameters) async throws -> ListCalendarEventsResponse {
+        guard Timestamp.date(from: parameters.from) != nil,
+              Timestamp.date(from: parameters.to) != nil,
+              parameters.accountDids.count <= 100,
+              parameters.statuses.count <= CalendarEventStatus.allCases.count
+        else {
+            throw SkejXRPCTransportError.invalidURL
+        }
+        for did in parameters.accountDids {
+            try SkejPayloadValidator.validateDID(did)
+        }
+        var queryItems = [
+            URLQueryItem(name: "from", value: parameters.from),
+            URLQueryItem(name: "to", value: parameters.to),
+        ]
+        queryItems.append(contentsOf: parameters.accountDids.map { URLQueryItem(name: "accountDids", value: $0) })
+        queryItems.append(contentsOf: parameters.statuses.map { URLQueryItem(name: "status", value: $0.rawValue) })
+        let data = try await transport.send(method: .listCalendar, parameters: queryItems, body: nil)
+        return try JSONDecoder().decode(ListCalendarEventsResponse.self, from: data)
     }
 
     public func createSchedule(_ input: SkejCreateScheduleInput) async throws -> ScheduledPostSummary {

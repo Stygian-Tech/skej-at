@@ -27,6 +27,14 @@ function compactFacets(facets: ReturnType<typeof compileSocialMarkdown>["facets"
         value: feature.tag,
       };
     }
+    if (feature?.$type === "app.bsky.richtext.facet#mention") {
+      return {
+        byteStart: facet.index.byteStart,
+        byteEnd: facet.index.byteEnd,
+        type: "mention",
+        value: feature.did,
+      };
+    }
     throw new Error("Unexpected fixture facet");
   });
 }
@@ -34,7 +42,10 @@ function compactFacets(facets: ReturnType<typeof compileSocialMarkdown>["facets"
 describe("social Markdown shared fixtures", () => {
   for (const fixture of corpus.cases) {
     it(fixture.name, () => {
-      const compilation = compileSocialMarkdown(fixture.source);
+      const compilation = compileSocialMarkdown(
+        fixture.source,
+        "mentions" in fixture ? fixture.mentions : undefined
+      );
       expect(compilation.text).toBe(fixture.text);
       expect(compactFacets(compilation.facets)).toEqual(fixture.facets);
     });
@@ -126,6 +137,50 @@ describe("social Markdown commands", () => {
 });
 
 describe("post projection compatibility", () => {
+  it("trims and rebases resolved mentions and labeled links", () => {
+    const projected = projectMarkdownPost({
+      text: "stale",
+      source: {
+        format: "markdown",
+        text: "  👋 @alice.test [Skej](https://skej.at)  ",
+        mentions: [{ handle: "alice.test", did: "did:plc:alice" }],
+      },
+    });
+    expect(projected.text).toBe("👋 @alice.test Skej");
+    expect(projected.facets).toEqual([
+      {
+        index: { byteStart: 5, byteEnd: 16 },
+        features: [
+          { $type: "app.bsky.richtext.facet#mention", did: "did:plc:alice" },
+        ],
+      },
+      {
+        index: { byteStart: 17, byteEnd: 21 },
+        features: [
+          { $type: "app.bsky.richtext.facet#link", uri: "https://skej.at" },
+        ],
+      },
+    ]);
+  });
+
+  it("preserves a source-less native labeled link", () => {
+    const native = {
+      text: "Read Skej",
+      facets: [
+        {
+          index: { byteStart: 5, byteEnd: 9 },
+          features: [
+            {
+              $type: "app.bsky.richtext.facet#link" as const,
+              uri: "https://skej.at",
+            },
+          ],
+        },
+      ],
+    };
+    expect(projectMarkdownPost(native)).toEqual(native);
+  });
+
   it("keeps legacy literal Markdown and facets unchanged", () => {
     const legacy = {
       text: "Legacy **literal** https://example.com",
@@ -148,7 +203,7 @@ describe("post projection compatibility", () => {
     const projected = compileSocialMarkdown("👋 [Skej](https://skej.at)");
     expect(projectionSegments(projected)).toEqual([
       { text: "👋 " },
-      { text: "Skej", uri: "https://skej.at" },
+      { text: "Skej", kind: "link", uri: "https://skej.at" },
     ]);
   });
 });

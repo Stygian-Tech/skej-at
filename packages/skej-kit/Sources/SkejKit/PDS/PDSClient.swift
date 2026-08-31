@@ -8,6 +8,11 @@ public protocol PDSClient: Sendable {
     func getSchedule(did: String, rkey: String) async throws -> SkejScheduleRecord?
     func listSchedules(did: String) async throws -> [String: SkejScheduleRecord]
     func deleteSchedule(did: String, rkey: String) async throws
+    func writeCalendarEvent(
+        did: String,
+        rkey: String,
+        record: CommunityCalendarEventRecord
+    ) async throws -> CalendarEventReference
     func uploadBlob(
         did: String,
         data: Data,
@@ -57,6 +62,23 @@ public struct SQLitePDSClient: PDSClient {
 
     public func deleteSchedule(did: String, rkey: String) async throws {
         try await store.deleteScheduleRecord(did: did, rkey: rkey)
+    }
+
+    public func writeCalendarEvent(
+        did: String,
+        rkey: String,
+        record: CommunityCalendarEventRecord
+    ) async throws -> CalendarEventReference {
+        try await writeRecord(
+            did: did,
+            collection: CalendarEventProjection.collection,
+            rkey: rkey,
+            record: record
+        )
+        return CalendarEventReference(
+            uri: ATURI.record(did: did, collection: CalendarEventProjection.collection, rkey: rkey),
+            cid: "bafycalendar\(rkey)"
+        )
     }
 
     public func uploadBlob(
@@ -169,6 +191,23 @@ public actor InMemoryPDSClient: PDSClient {
 
     public func deleteSchedule(did: String, rkey: String) async throws {
         schedules[did]?[rkey] = nil
+    }
+
+    public func writeCalendarEvent(
+        did: String,
+        rkey: String,
+        record: CommunityCalendarEventRecord
+    ) async throws -> CalendarEventReference {
+        try await writeRecord(
+            did: did,
+            collection: CalendarEventProjection.collection,
+            rkey: rkey,
+            record: record
+        )
+        return CalendarEventReference(
+            uri: ATURI.record(did: did, collection: CalendarEventProjection.collection, rkey: rkey),
+            cid: "bafycalendar\(rkey)"
+        )
     }
 
     public func uploadBlob(

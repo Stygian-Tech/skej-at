@@ -90,4 +90,16 @@ struct AppConfigTests {
         let config = AppConfig.load(environment: ["APP_ENV": "prod", "SKEJ_PRO_ENABLED": value])
         #expect(config.proFeaturesEnabled == true)
     }
+
+    @Test func engagementCollectorUsesDocumentedEnvironmentNames() {
+        let config = AppConfig.load(environment: [
+            "SKEJ_ENGAGEMENT_ENABLED": "false",
+            "SKEJ_ENGAGEMENT_INTERVAL_SECONDS": "1200",
+            "SKEJ_BSKY_APPVIEW_ORIGIN": "https://appview.example/",
+        ])
+
+        #expect(config.engagementCollectorEnabled == false)
+        #expect(config.engagementCollectorIntervalSeconds == 1200)
+        #expect(config.engagementAppViewOrigin == "https://appview.example")
+    }
 }

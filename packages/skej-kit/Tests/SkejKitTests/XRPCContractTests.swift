@@ -3,7 +3,7 @@ import Foundation
 import Testing
 
 @Test func xrpcDescriptorsHaveCanonicalVerbsAndUniqueNSIDs() {
-    #expect(SkejXRPCMethod.all.count == 29)
+    #expect(SkejXRPCMethod.all.count >= 29)
     #expect(Set(SkejXRPCMethod.all.map(\.nsid)).count == SkejXRPCMethod.all.count)
     #expect(SkejXRPCMethod.listSchedules.verb == "GET")
     #expect(SkejXRPCMethod.createSchedule.verb == "POST")

@@ -15,8 +15,11 @@ public struct SkejXRPCMethod: Hashable, Sendable {
     public var verb: String { kind == .query ? "GET" : "POST" }
 
     public static let getSession = Self("at.skej.actor.getSession", .query)
+    public static let searchMentions = Self("at.skej.actor.searchMentions", .query)
     public static let logout = Self("at.skej.auth.logout", .procedure)
     public static let listAccounts = Self("at.skej.account.list", .query)
+    public static let setDefaultAccount = Self("at.skej.account.setDefault", .procedure, proOnly: true)
+    public static let disconnectAccount = Self("at.skej.account.disconnect", .procedure, proOnly: true)
 
     public static let listTeams = Self("at.skej.team.list", .query, proOnly: true)
     public static let getTeam = Self("at.skej.team.get", .query, proOnly: true)
@@ -31,6 +34,9 @@ public struct SkejXRPCMethod: Hashable, Sendable {
     public static let putBrandGrant = Self("at.skej.team.putBrandGrant", .procedure, proOnly: true)
     public static let listBrands = Self("at.skej.team.listBrands", .query, proOnly: true)
     public static let putBrand = Self("at.skej.team.putBrand", .procedure, proOnly: true)
+    public static let listInvites = Self("at.skej.team.listInvites", .query, proOnly: true)
+    public static let createInvite = Self("at.skej.team.createInvite", .procedure, proOnly: true)
+    public static let revokeInvite = Self("at.skej.team.revokeInvite", .procedure, proOnly: true)
 
     public static let getBrandProfile = Self("at.skej.brand.getProfile", .query, proOnly: true)
     public static let updateBrandProfile = Self("at.skej.brand.updateProfile", .procedure, proOnly: true)
@@ -46,17 +52,22 @@ public struct SkejXRPCMethod: Hashable, Sendable {
 
     public static let createLinkPreview = Self("at.skej.preview.createLink", .procedure)
     public static let listAuditEvents = Self("at.skej.audit.list", .query, proOnly: true)
+    public static let listCalendar = Self("at.skej.calendar.list", .query, proOnly: true)
+    public static let getEngagement = Self("at.skej.analytics.getEngagement", .query, proOnly: true)
+    public static let listEntitlements = Self("at.skej.admin.entitlement.list", .query, proOnly: true)
+    public static let putEntitlement = Self("at.skej.admin.entitlement.put", .procedure, proOnly: true)
     public static let seedDevelopment = Self("at.skej.dev.seed", .procedure, requiresAuthentication: false, proOnly: true)
 
     public static let all: [Self] = [
-        .getSession, .logout, .listAccounts,
+        .getSession, .searchMentions, .logout, .listAccounts, .setDefaultAccount, .disconnectAccount,
         .listTeams, .getTeam, .createTeam, .updateTeam, .transferTeamOwner,
         .listMembers, .putMember, .listGroups, .putGroup, .listBrandGrants,
-        .putBrandGrant, .listBrands, .putBrand,
+        .putBrandGrant, .listBrands, .putBrand, .listInvites, .createInvite, .revokeInvite,
         .getBrandProfile, .updateBrandProfile,
         .listSchedules, .createSchedule, .updateSchedule, .cancelSchedule,
         .retrySchedule, .duplicateSchedule, .publishNow, .recordView,
-        .createLinkPreview, .listAuditEvents, .seedDevelopment,
+        .createLinkPreview, .listAuditEvents, .listCalendar, .getEngagement,
+        .listEntitlements, .putEntitlement, .seedDevelopment,
     ]
 
     private init(

@@ -183,4 +183,59 @@ describe("SocialMarkdownEditor", () => {
       "Keep **literal**"
     );
   });
+
+  it("resolves an at-mention with the keyboard and previews exact native facets", async () => {
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = (async () => ({
+      ok: true,
+      json: async () => ({
+        actors: [
+          {
+            handle: "alice.test",
+            did: "did:plc:alice",
+            displayName: "Alice",
+          },
+        ],
+      }),
+    })) as unknown as typeof fetch;
+    try {
+      await render(<EditorPair />);
+      const textarea = container.querySelector("textarea");
+      if (!textarea) throw new Error("Editor was not rendered");
+      await act(async () => {
+        const valueSetter = Object.getOwnPropertyDescriptor(
+          HTMLTextAreaElement.prototype,
+          "value"
+        )?.set;
+        if (!valueSetter) throw new Error("Textarea value setter is unavailable");
+        valueSetter.call(textarea, "Hello @ali #skej");
+        textarea.setSelectionRange(10, 10);
+        textarea.dispatchEvent(new Event("input", { bubbles: true }));
+      });
+      await act(async () => new Promise((resolve) => setTimeout(resolve, 200)));
+
+      expect(container.querySelector('[role="listbox"]')?.textContent).toContain(
+        "@alice.test"
+      );
+      await act(async () => {
+        textarea.dispatchEvent(
+          new KeyboardEvent("keydown", { bubbles: true, key: "Enter" })
+        );
+      });
+      await new Promise((resolve) => setTimeout(resolve, 0));
+
+      expect(textarea.value).toBe("Hello @alice.test #skej");
+      const output = container.querySelector('[id="post-1-bluesky-output"]');
+      expect(output?.querySelector('[data-facet="mention"]')?.textContent).toBe(
+        "@alice.test"
+      );
+      expect(output?.querySelector('[data-facet="mention"]')?.getAttribute("title")).toBe(
+        "did:plc:alice"
+      );
+      expect(output?.querySelector('[data-facet="tag"]')?.textContent).toBe("#skej");
+      expect(output?.textContent).toBe("Hello @alice.test #skej");
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
 });

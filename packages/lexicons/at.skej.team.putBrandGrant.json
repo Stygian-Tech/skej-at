@@ -49,11 +49,16 @@
                 "knownValues": [
                   "create",
                   "approve",
-                  "manage"
+                  "manage",
+                  "viewAnalytics"
                 ],
                 "maxLength": 8192
               },
               "maxLength": 1000
+            },
+            "status": {
+              "type": "string",
+              "knownValues": ["active", "revoked"]
             }
           }
         }

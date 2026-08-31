@@ -1,0 +1,99 @@
+{
+  "$type": "com.atproto.lexicon.schema",
+  "lexicon": 1,
+  "id": "community.lexicon.calendar.event",
+  "description": "A calendar event.",
+  "defs": {
+    "main": {
+      "key": "tid",
+      "type": "record",
+      "record": {
+        "type": "object",
+        "required": ["createdAt", "name"],
+        "properties": {
+          "mode": {
+            "ref": "#mode",
+            "type": "ref",
+            "description": "The attendance mode of the event."
+          },
+          "name": {
+            "type": "string",
+            "description": "The name of the event."
+          },
+          "uris": {
+            "type": "array",
+            "items": { "ref": "#uri", "type": "ref" },
+            "description": "URIs associated with the event."
+          },
+          "endsAt": {
+            "type": "string",
+            "format": "datetime",
+            "description": "Client-declared timestamp when the event ends."
+          },
+          "status": {
+            "ref": "#status",
+            "type": "ref",
+            "description": "The status of the event."
+          },
+          "startsAt": {
+            "type": "string",
+            "format": "datetime",
+            "description": "Client-declared timestamp when the event starts."
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "datetime",
+            "description": "Client-declared timestamp when the event was created."
+          },
+          "locations": {
+            "type": "array",
+            "items": {
+              "refs": [
+                "#uri",
+                "community.lexicon.location.address",
+                "community.lexicon.location.fsq",
+                "community.lexicon.location.geo",
+                "community.lexicon.location.hthree"
+              ],
+              "type": "union"
+            },
+            "description": "The locations where the event takes place."
+          },
+          "description": {
+            "type": "string",
+            "description": "The description of the event."
+          }
+        }
+      }
+    },
+    "uri": {
+      "type": "object",
+      "required": ["uri"],
+      "properties": {
+        "uri": { "type": "string", "format": "uri" },
+        "name": { "type": "string", "description": "The display name of the URI." }
+      },
+      "description": "A URI associated with the event."
+    },
+    "mode": {
+      "type": "string",
+      "default": "#inperson",
+      "description": "The mode of the event.",
+      "knownValues": ["#hybrid", "#inperson", "#virtual"]
+    },
+    "status": {
+      "type": "string",
+      "default": "#scheduled",
+      "description": "The status of the event.",
+      "knownValues": ["#cancelled", "#planned", "#postponed", "#rescheduled", "#scheduled"]
+    },
+    "hybrid": { "type": "token", "description": "A hybrid event that takes place both online and offline." },
+    "inperson": { "type": "token", "description": "An in-person event that takes place offline." },
+    "virtual": { "type": "token", "description": "A virtual event that takes place online." },
+    "cancelled": { "type": "token", "description": "The event has been cancelled." },
+    "planned": { "type": "token", "description": "The event has been created, but not finalized." },
+    "postponed": { "type": "token", "description": "The event has been postponed and a new start date has not been set." },
+    "rescheduled": { "type": "token", "description": "The event has been rescheduled." },
+    "scheduled": { "type": "token", "description": "The event has been created and scheduled." }
+  }
+}

@@ -22,6 +22,51 @@ public struct SkejAccountParameters: Codable, Equatable, Sendable {
     }
 }
 
+public struct SkejCalendarParameters: Codable, Equatable, Sendable {
+    public let from: String
+    public let to: String
+    public let accountDids: [String]
+    public let statuses: [CalendarEventStatus]
+
+    public init(
+        from: String,
+        to: String,
+        accountDids: [String] = [],
+        statuses: [CalendarEventStatus] = []
+    ) {
+        self.from = from
+        self.to = to
+        self.accountDids = accountDids
+        self.statuses = statuses
+    }
+}
+
+public struct ListCalendarEventsResponse: Codable, Equatable, Sendable {
+    public let events: [CalendarEventSummary]
+
+    public init(events: [CalendarEventSummary]) {
+        self.events = events
+    }
+}
+
+public struct SkejRequiredAccountInput: Codable, Equatable, Sendable {
+    public let accountDid: String
+
+    public init(accountDid: String) {
+        self.accountDid = accountDid
+    }
+}
+
+public struct SkejSearchMentionsParameters: Codable, Equatable, Sendable {
+    public let query: String
+    public let limit: Int
+
+    public init(query: String, limit: Int = 8) {
+        self.query = query
+        self.limit = limit
+    }
+}
+
 public struct SkejTeamParameters: Codable, Equatable, Sendable {
     public let teamRkey: String
 
@@ -74,13 +119,15 @@ public struct SkejPutGroupInput: Codable, Sendable {
     public let name: String
     public let memberDids: [String]?
     public let brandGrantUris: [String]?
+    public let status: TeamGroupStatus?
 
-    public init(teamRkey: String, groupRkey: String? = nil, name: String, memberDids: [String]? = nil, brandGrantUris: [String]? = nil) {
+    public init(teamRkey: String, groupRkey: String? = nil, name: String, memberDids: [String]? = nil, brandGrantUris: [String]? = nil, status: TeamGroupStatus? = nil) {
         self.teamRkey = teamRkey
         self.groupRkey = groupRkey
         self.name = name
         self.memberDids = memberDids
         self.brandGrantUris = brandGrantUris
+        self.status = status
     }
 }
 
@@ -91,14 +138,16 @@ public struct SkejPutBrandGrantInput: Codable, Sendable {
     public let granteeType: GrantGranteeType
     public let grantee: String
     public let capabilities: [BrandCapability]
+    public let status: BrandGrantStatus?
 
-    public init(teamRkey: String, grantRkey: String? = nil, brandDid: String, granteeType: GrantGranteeType, grantee: String, capabilities: [BrandCapability]) {
+    public init(teamRkey: String, grantRkey: String? = nil, brandDid: String, granteeType: GrantGranteeType, grantee: String, capabilities: [BrandCapability], status: BrandGrantStatus? = nil) {
         self.teamRkey = teamRkey
         self.grantRkey = grantRkey
         self.brandDid = brandDid
         self.granteeType = granteeType
         self.grantee = grantee
         self.capabilities = capabilities
+        self.status = status
     }
 }
 
@@ -111,6 +160,66 @@ public struct SkejPutBrandInput: Codable, Sendable {
         self.teamRkey = teamRkey
         self.brandDid = brandDid
         self.status = status
+    }
+}
+
+public struct SkejCreateInviteInput: Codable, Equatable, Sendable {
+    public let teamRkey: String
+    public let invitedHandle: String?
+    public let invitedDid: String?
+    public let role: TeamRole
+    public let expiresAt: String?
+
+    public init(
+        teamRkey: String,
+        invitedHandle: String? = nil,
+        invitedDid: String? = nil,
+        role: TeamRole = .user,
+        expiresAt: String? = nil
+    ) {
+        self.teamRkey = teamRkey
+        self.invitedHandle = invitedHandle
+        self.invitedDid = invitedDid
+        self.role = role
+        self.expiresAt = expiresAt
+    }
+}
+
+public struct SkejRevokeInviteInput: Codable, Equatable, Sendable {
+    public let inviteId: String
+
+    public init(inviteId: String) {
+        self.inviteId = inviteId
+    }
+}
+
+public struct SkejPutEntitlementInput: Codable, Equatable, Sendable {
+    public let scope: ProEntitlementScope
+    public let subject: String
+    public let status: ProEntitlementStatus
+    public let expiresAt: String?
+
+    public init(scope: ProEntitlementScope, subject: String, status: ProEntitlementStatus, expiresAt: String? = nil) {
+        self.scope = scope
+        self.subject = subject
+        self.status = status
+        self.expiresAt = expiresAt
+    }
+}
+
+public struct ListTeamInvitesResponse: Codable, Equatable, Sendable {
+    public let invites: [TeamInvite]
+
+    public init(invites: [TeamInvite]) {
+        self.invites = invites
+    }
+}
+
+public struct ListProEntitlementsResponse: Codable, Equatable, Sendable {
+    public let entitlements: [ProEntitlement]
+
+    public init(entitlements: [ProEntitlement]) {
+        self.entitlements = entitlements
     }
 }
 

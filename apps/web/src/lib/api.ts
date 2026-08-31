@@ -3,26 +3,36 @@ import {
   AuditEvent,
   BrandCapability,
   BrandGrantSummary,
+  BrandGrantStatus,
   BrandProfile,
   BrandSummary,
   GrantGranteeType,
   ExternalEmbed,
   ManagedAccount,
+  MentionActor,
   ScheduleStatus,
   ScheduledPostSummary,
   TeamGroupSummary,
+  TeamGroupStatus,
+  TeamInvite,
   TeamMemberSummary,
   TeamRole,
   TeamSummary,
   Viewer,
+  ProEntitlement,
 } from "@/lib/skejTypes";
 
 const XRPC = {
   getSession: "at.skej.actor.getSession",
+  searchMentions: "at.skej.actor.searchMentions",
   logout: "at.skej.auth.logout",
   listAccounts: "at.skej.account.list",
+  setDefaultAccount: "at.skej.account.setDefault",
+  disconnectAccount: "at.skej.account.disconnect",
   listTeams: "at.skej.team.list",
   createTeam: "at.skej.team.create",
+  updateTeam: "at.skej.team.update",
+  transferTeamOwner: "at.skej.team.transferOwner",
   listMembers: "at.skej.team.listMembers",
   putMember: "at.skej.team.putMember",
   listGroups: "at.skej.team.listGroups",
@@ -31,6 +41,9 @@ const XRPC = {
   putBrandGrant: "at.skej.team.putBrandGrant",
   listBrands: "at.skej.team.listBrands",
   putBrand: "at.skej.team.putBrand",
+  listInvites: "at.skej.team.listInvites",
+  createInvite: "at.skej.team.createInvite",
+  revokeInvite: "at.skej.team.revokeInvite",
   getBrandProfile: "at.skej.brand.getProfile",
   updateBrandProfile: "at.skej.brand.updateProfile",
   listSchedules: "at.skej.schedule.list",
@@ -43,6 +56,8 @@ const XRPC = {
   recordView: "at.skej.schedule.recordView",
   createLinkPreview: "at.skej.preview.createLink",
   listAuditEvents: "at.skej.audit.list",
+  listEntitlements: "at.skej.admin.entitlement.list",
+  putEntitlement: "at.skej.admin.entitlement.put",
 } as const;
 
 function xrpcQuery(nsid: string, parameters: Record<string, string | undefined> = {}): string {
@@ -76,7 +91,8 @@ export class SkejApiError extends Error {
 }
 
 export function isReauthRequired(error: unknown): boolean {
-  return error instanceof SkejApiError && error.code === "account_needs_reauth";
+  return error instanceof SkejApiError &&
+    error.code.replace(/[^a-z]/gi, "").toLowerCase() === "accountneedsreauth";
 }
 
 async function requestJSON<T>(input: RequestInfo | URL, init?: RequestInit): Promise<T> {
@@ -103,9 +119,19 @@ async function requestJSON<T>(input: RequestInfo | URL, init?: RequestInit): Pro
   return (await response.json()) as T;
 }
 
-export function startOAuth(handle: string): string {
+export function startOAuth(
+  handle: string,
+  options?: {
+    purpose?: "connect_account" | "brand_connection" | "invite_accept";
+    returnTo?: string;
+    inviteToken?: string;
+  }
+): string {
   const params = new URLSearchParams();
   params.set("handle", handle.trim());
+  if (options?.purpose) params.set("purpose", options.purpose);
+  if (options?.returnTo) params.set("returnTo", options.returnTo);
+  if (options?.inviteToken) params.set("inviteToken", options.inviteToken);
   return `/oauth/start?${params.toString()}`;
 }
 
@@ -131,6 +157,25 @@ export async function listAccounts(): Promise<ManagedAccount[]> {
   return body.accounts;
 }
 
+export async function setDefaultAccount(accountDid: string): Promise<void> {
+  await xrpcProcedure<{ ok: boolean }>(XRPC.setDefaultAccount, { accountDid });
+}
+
+export async function disconnectAccount(accountDid: string): Promise<void> {
+  await xrpcProcedure<{ ok: boolean }>(XRPC.disconnectAccount, { accountDid });
+}
+
+export async function searchMentions(
+  query: string,
+  signal?: AbortSignal
+): Promise<MentionActor[]> {
+  const body = await requestJSON<{ actors: MentionActor[] }>(
+    xrpcQuery(XRPC.searchMentions, { q: query.trim(), limit: "8" }),
+    { signal }
+  );
+  return body.actors;
+}
+
 export async function listTeams(): Promise<TeamSummary[]> {
   const body = await requestJSON<{ teams: TeamSummary[] }>(xrpcQuery(XRPC.listTeams));
   return body.teams;
@@ -138,6 +183,17 @@ export async function listTeams(): Promise<TeamSummary[]> {
 
 export async function createTeam(title: string): Promise<TeamSummary> {
   return xrpcProcedure<TeamSummary>(XRPC.createTeam, { title });
+}
+
+export async function updateTeamStatus(
+  team: TeamSummary,
+  status: "active" | "archived"
+): Promise<TeamSummary> {
+  return xrpcProcedure<TeamSummary>(XRPC.updateTeam, { teamRkey: team.rkey, status });
+}
+
+export async function transferTeamOwner(teamRkey: string, ownerAdminDid: string): Promise<TeamSummary> {
+  return xrpcProcedure<TeamSummary>(XRPC.transferTeamOwner, { teamRkey, ownerAdminDid });
 }
 
 export async function listTeamMembers(teamRkey: string): Promise<TeamMemberSummary[]> {
@@ -161,6 +217,20 @@ export async function addTeamMember(
   });
 }
 
+export async function updateTeamMemberStatus(
+  teamRkey: string,
+  member: TeamMemberSummary,
+  status: "active" | "disabled"
+): Promise<TeamMemberSummary> {
+  return xrpcProcedure<TeamMemberSummary>(XRPC.putMember, {
+    teamRkey,
+    memberDid: member.record.memberDid,
+    role: member.record.role,
+    status,
+    groupUris: member.record.groupUris ?? [],
+  });
+}
+
 export async function listTeamGroups(teamRkey: string): Promise<TeamGroupSummary[]> {
   const body = await requestJSON<{ groups: TeamGroupSummary[] }>(
     xrpcQuery(XRPC.listGroups, { teamRkey })
@@ -178,6 +248,21 @@ export async function createTeamGroup(
     name,
     memberDids,
     brandGrantUris: [],
+  });
+}
+
+export async function updateTeamGroupStatus(
+  teamRkey: string,
+  group: TeamGroupSummary,
+  status: TeamGroupStatus
+): Promise<TeamGroupSummary> {
+  return xrpcProcedure<TeamGroupSummary>(XRPC.putGroup, {
+    teamRkey,
+    groupRkey: group.rkey,
+    name: group.record.name,
+    memberDids: group.record.memberDids ?? [],
+    brandGrantUris: group.record.brandGrantUris ?? [],
+    status,
   });
 }
 
@@ -200,6 +285,57 @@ export async function createBrandGrant(
   return xrpcProcedure<BrandGrantSummary>(XRPC.putBrandGrant, { teamRkey, ...grant });
 }
 
+export async function updateBrandGrantStatus(
+  teamRkey: string,
+  grant: BrandGrantSummary,
+  status: BrandGrantStatus
+): Promise<BrandGrantSummary> {
+  return xrpcProcedure<BrandGrantSummary>(XRPC.putBrandGrant, {
+    teamRkey,
+    grantRkey: grant.rkey,
+    brandDid: grant.record.brandDid,
+    granteeType: grant.record.granteeType,
+    grantee: grant.record.grantee,
+    capabilities: grant.record.capabilities,
+    status,
+  });
+}
+
+export async function listTeamInvites(teamRkey: string): Promise<TeamInvite[]> {
+  const body = await requestJSON<{ invites: TeamInvite[] }>(
+    xrpcQuery(XRPC.listInvites, { teamRkey })
+  );
+  return body.invites;
+}
+
+export async function createTeamInvite(
+  teamRkey: string,
+  identity: { invitedHandle?: string; invitedDid?: string },
+  role: TeamRole
+): Promise<TeamInvite> {
+  return xrpcProcedure<TeamInvite>(XRPC.createInvite, { teamRkey, ...identity, role });
+}
+
+export async function revokeTeamInvite(inviteId: string): Promise<void> {
+  await xrpcProcedure<{ ok: boolean }>(XRPC.revokeInvite, { inviteId });
+}
+
+export async function listProEntitlements(): Promise<ProEntitlement[]> {
+  const body = await requestJSON<{ entitlements: ProEntitlement[] }>(
+    xrpcQuery(XRPC.listEntitlements)
+  );
+  return body.entitlements;
+}
+
+export async function putProEntitlement(input: {
+  scope: ProEntitlement["scope"];
+  subject: string;
+  status: ProEntitlement["status"];
+  expiresAt?: string;
+}): Promise<ProEntitlement> {
+  return xrpcProcedure<ProEntitlement>(XRPC.putEntitlement, input);
+}
+
 export async function listBrands(teamRkey: string): Promise<BrandSummary[]> {
   const body = await requestJSON<{ brands: BrandSummary[] }>(
     xrpcQuery(XRPC.listBrands, { teamRkey })
@@ -216,6 +352,14 @@ export async function designateBrand(
     brandDid,
     status: "active",
   });
+}
+
+export async function updateBrandStatus(
+  teamRkey: string,
+  brandDid: string,
+  status: ManagedAccount["status"]
+): Promise<BrandSummary> {
+  return xrpcProcedure<BrandSummary>(XRPC.putBrand, { teamRkey, brandDid, status });
 }
 
 export async function getBrandProfile(did: string): Promise<BrandProfile> {

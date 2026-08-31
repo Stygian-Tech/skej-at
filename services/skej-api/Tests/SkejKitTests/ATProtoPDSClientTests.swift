@@ -59,6 +59,65 @@ struct ATProtoPDSClientTests {
         #expect(facetByteRange(facets[0]) == 0..<21)
     }
 
+    @Test func publishesResolvedMentionAndTagFacetsWithExactUTF8Ranges() async throws {
+        let http = RecordingPublishHTTPClient()
+        let client = try await authenticatedClient(http: http)
+        var record = makeRecord()
+        record.publishRkey = "3mentiontags"
+        record.posts = [PostPlan(
+            text: "stale",
+            source: PostSource(
+                format: .markdown,
+                text: "👋 @alice.test #skej",
+                mentions: [ResolvedMention(handle: "alice.test", did: "did:plc:alice")]
+            ),
+            publishRkey: record.publishRkey
+        )]
+
+        _ = try await client.publishThread(did: "did:plc:test", record: record)
+
+        let requests = await http.publishBodies()
+        guard case let .array(facets)? = value(requests[0], path: ["record", "facets"]) else {
+            Issue.record("Expected mention and tag facets")
+            return
+        }
+        #expect(facets.count == 2)
+        #expect(facetFeatureString(facets[0], key: "did") == "did:plc:alice")
+        #expect(facetByteRange(facets[0]) == 5..<16)
+        #expect(facetFeatureString(facets[1], key: "tag") == "skej")
+        #expect(facetByteRange(facets[1]) == 17..<22)
+    }
+
+    @Test func writesPublicMetadataOnlyCalendarEventWithScheduleRkey() async throws {
+        let http = RecordingPublishHTTPClient()
+        let client = try await authenticatedClient(http: http)
+        let event = CommunityCalendarEventRecord(
+            name: "Launch announcement",
+            uris: [CalendarEventURI(
+                uri: "at://did:plc:test/at.skej.schedule/3calendarrecord",
+                name: "Skej schedule"
+            )],
+            startsAt: "2026-09-01T15:00:00Z",
+            status: .scheduled,
+            createdAt: "2026-08-30T12:00:00Z"
+        )
+
+        let reference = try await client.writeCalendarEvent(
+            did: "did:plc:test",
+            rkey: "3calendarrecord",
+            record: event
+        )
+
+        #expect(reference.uri == "at://did:plc:test/community.lexicon.calendar.event/3calendarrecord")
+        #expect(reference.cid == "bafy3calendarrecord")
+        let requests = await http.publishBodies()
+        #expect(stringValue(requests[0], path: ["collection"]) == CalendarEventProjection.collection)
+        #expect(stringValue(requests[0], path: ["rkey"]) == "3calendarrecord")
+        #expect(stringValue(requests[0], path: ["record", "$type"]) == CalendarEventProjection.collection)
+        #expect(stringValue(requests[0], path: ["record", "name"]) == "Launch announcement")
+        #expect(value(requests[0], path: ["record", "description"]) == nil)
+    }
+
     @Test func preservesCodeMarkersForClientSideRendering() async throws {
         let http = RecordingPublishHTTPClient()
         let client = try await authenticatedClient(http: http)

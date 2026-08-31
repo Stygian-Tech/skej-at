@@ -6,13 +6,15 @@ public struct ScheduleWorker: Sendable {
     public let pdsClient: any PDSClient
     public let logger: Logger
     private let linkPreviewHydrator: any LinkPreviewHydrating
+    private let requiresAuthoritativeCalendar: Bool
     private let maxAttempts = 8
 
     public init(
         store: SQLiteStore,
         pdsClient: any PDSClient,
         logger: Logger,
-        linkPreviewHydrator: (any LinkPreviewHydrating)? = nil
+        linkPreviewHydrator: (any LinkPreviewHydrating)? = nil,
+        requiresAuthoritativeCalendar: Bool = true
     ) {
         self.store = store
         self.pdsClient = pdsClient
@@ -21,6 +23,7 @@ public struct ScheduleWorker: Sendable {
             pdsClient: pdsClient,
             logger: logger
         )
+        self.requiresAuthoritativeCalendar = requiresAuthoritativeCalendar
     }
 
     public func runTick(now: Date = Date()) async {
@@ -79,6 +82,16 @@ public struct ScheduleWorker: Sendable {
         do {
             guard var record = try await pdsClient.getSchedule(did: job.did, rkey: job.rkey) else {
                 throw ScheduleError(code: .recordInvalid, message: "Schedule record missing from PDS")
+            }
+
+            if requiresAuthoritativeCalendar {
+                guard let reconciled = await reconcileAuthoritativeCalendar(
+                    job: job,
+                    record: record,
+                    now: now,
+                    nowString: nowString
+                ) else { return }
+                record = reconciled
             }
 
             if record.recordType == "app.bsky.feed.post" {
@@ -206,6 +219,75 @@ public struct ScheduleWorker: Sendable {
             await handlePublishError(error, job: job, now: now, nowString: nowString)
         } catch {
             await handlePublishError(Self.classify(error), job: job, now: now, nowString: nowString)
+        }
+    }
+
+    private func reconcileAuthoritativeCalendar(
+        job: ScheduledJob,
+        record: SkejScheduleRecord,
+        now: Date,
+        nowString: String
+    ) async -> SkejScheduleRecord? {
+        do {
+            let event = try await CalendarCoordinator(pdsClient: pdsClient)
+                .requirePublishableEvent(did: job.did, rkey: job.rkey)
+            guard event.startsAt != record.scheduledAt else { return record }
+
+            var reconciled = record
+            reconciled.scheduledAt = event.startsAt
+            reconciled.updatedAt = nowString
+            try await pdsClient.writeSchedule(did: job.did, rkey: job.rkey, record: reconciled)
+
+            var projectedJob = job
+            projectedJob.scheduledAt = event.startsAt
+            projectedJob.status = .scheduled
+            projectedJob.lastError = nil
+            projectedJob.nextAttemptAt = nil
+            try await store.upsertScheduleJob(projectedJob, now: nowString)
+            try await store.insertAuditEvent(
+                did: job.did,
+                scheduleRkey: job.rkey,
+                action: "calendar_reconciled",
+                message: "Authoritative calendar timing reconciled to \(event.startsAt).",
+                now: nowString
+            )
+            if let scheduledDate = Timestamp.date(from: event.startsAt), scheduledDate > now {
+                logger.info("deferred schedule \(job.rkey) to authoritative calendar time \(event.startsAt)")
+                return nil
+            }
+            return reconciled
+        } catch {
+            let message: String
+            switch error {
+            case CalendarReconciliationError.eventMissing:
+                message = "Authoritative calendar event is missing."
+            case CalendarReconciliationError.eventInvalid:
+                message = "Authoritative calendar event is invalid."
+            case let CalendarReconciliationError.eventNotPublishable(status):
+                message = "Authoritative calendar event is not publishable (\(status.rawValue))."
+            default:
+                message = "Authoritative calendar event could not be verified."
+            }
+            let scheduleError = ScheduleError(
+                code: .recordInvalid,
+                message: message,
+                classification: .recordInvalid
+            )
+            var blockedRecord = record
+            blockedRecord.status = .blocked
+            blockedRecord.lastError = scheduleError
+            blockedRecord.updatedAt = nowString
+            try? await pdsClient.writeSchedule(did: job.did, rkey: job.rkey, record: blockedRecord)
+            try? await store.markJobBlocked(did: job.did, rkey: job.rkey, error: scheduleError, now: nowString)
+            try? await store.insertAuditEvent(
+                did: job.did,
+                scheduleRkey: job.rkey,
+                action: "calendar_blocked",
+                message: message,
+                now: nowString
+            )
+            logger.error("blocked schedule \(job.rkey): \(message)")
+            return nil
         }
     }
 

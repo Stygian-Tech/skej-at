@@ -14,6 +14,7 @@ import {
 import Link from "next/link";
 import * as React from "react";
 
+import { AuthenticatedNav } from "@/components/AuthenticatedNav";
 import { OAuthLoginForm } from "@/components/OAuthLoginForm";
 import { SkejLogoMark } from "@/components/SkejLogoMark";
 import { ThemeToggle } from "@/components/ThemeToggle";
@@ -31,8 +32,11 @@ import { cn } from "@/lib/utils";
 import {
   addTeamMember,
   createBrandGrant,
+  createTeamInvite,
   createTeam,
+  createTeamGroup,
   designateBrand,
+  disconnectAccount,
   getBrandProfile,
   getViewer,
   listAccounts,
@@ -41,10 +45,19 @@ import {
   listBrands,
   listTeamGroups,
   listTeamMembers,
+  listTeamInvites,
   listTeams,
   logout,
+  revokeTeamInvite,
+  setDefaultAccount,
   startOAuth,
   updateBrandProfile,
+  updateBrandGrantStatus,
+  updateBrandStatus,
+  updateTeamGroupStatus,
+  updateTeamMemberStatus,
+  updateTeamStatus,
+  transferTeamOwner,
 } from "@/lib/api";
 import {
   AuditEvent,
@@ -57,6 +70,7 @@ import {
   TeamGroupSummary,
   TeamRole,
   TeamSummary,
+  TeamInvite,
   Viewer,
 } from "@/lib/skejTypes";
 
@@ -79,6 +93,7 @@ export function AccountSettingsPage() {
   const [teams, setTeams] = React.useState<TeamSummary[]>([]);
   const [selectedTeamRkey, setSelectedTeamRkey] = React.useState<string | null>(null);
   const [teamMembers, setTeamMembers] = React.useState<TeamMemberSummary[]>([]);
+  const [teamInvites, setTeamInvites] = React.useState<TeamInvite[]>([]);
   const [teamGroups, setTeamGroups] = React.useState<TeamGroupSummary[]>([]);
   const [brandGrants, setBrandGrants] = React.useState<BrandGrantSummary[]>([]);
   const [brands, setBrands] = React.useState<BrandSummary[]>([]);
@@ -86,6 +101,11 @@ export function AccountSettingsPage() {
   const [newTeamTitle, setNewTeamTitle] = React.useState("");
   const [newMemberDid, setNewMemberDid] = React.useState("");
   const [newMemberRole, setNewMemberRole] = React.useState<TeamRole>("user");
+  const [newInviteIdentity, setNewInviteIdentity] = React.useState("");
+  const [newInviteRole, setNewInviteRole] = React.useState<TeamRole>("user");
+  const [newConnectionHandle, setNewConnectionHandle] = React.useState("");
+  const [newGroupName, setNewGroupName] = React.useState("");
+  const [newOwnerDid, setNewOwnerDid] = React.useState("");
   const [newBrandDid, setNewBrandDid] = React.useState("");
   const [grantCapabilities, setGrantCapabilities] = React.useState<BrandCapability[]>([
     "create",
@@ -114,6 +134,7 @@ export function AccountSettingsPage() {
         .filter(
           (grant) =>
             grant.record.brandDid === selectedAccountDid &&
+            (grant.record.status ?? "active") === "active" &&
             grant.record.granteeType === "member" &&
             grant.record.grantee === viewer.did
         )
@@ -126,18 +147,21 @@ export function AccountSettingsPage() {
   const loadTeamDetails = React.useCallback(async (teamRkey: string | null) => {
     if (!teamRkey) {
       setTeamMembers([]);
+      setTeamInvites([]);
       setTeamGroups([]);
       setBrandGrants([]);
       setBrands([]);
       return;
     }
-    const [members, groups, grants, loadedBrands] = await Promise.all([
+    const [members, invites, groups, grants, loadedBrands] = await Promise.all([
       listTeamMembers(teamRkey),
+      listTeamInvites(teamRkey).catch(() => []),
       listTeamGroups(teamRkey),
       listBrandGrants(teamRkey),
       listBrands(teamRkey),
     ]);
     setTeamMembers(members);
+    setTeamInvites(invites);
     setTeamGroups(groups);
     setBrandGrants(grants);
     setBrands(loadedBrands);
@@ -259,6 +283,7 @@ export function AccountSettingsPage() {
             ) : null}
           </div>
         </header>
+        {isAuthenticated ? <AuthenticatedNav /> : null}
 
         {error ? (
           <div className="flex items-start gap-3 rounded-[1.5rem] border border-destructive/30 bg-muted px-4 py-3 text-sm font-bold text-destructive">
@@ -359,6 +384,37 @@ export function AccountSettingsPage() {
                       Create Team
                     </Button>
                   </div>
+                  {selectedTeam ? (
+                    <div className="grid gap-3 rounded-2xl border border-border p-3">
+                      <div className="flex flex-wrap items-center justify-between gap-2">
+                        <div className="text-sm font-black">Lifecycle</div>
+                        <div className="flex items-center gap-2">
+                          <Badge variant="outline">{selectedTeam.record.status}</Badge>
+                          <Button
+                            disabled={isMutating}
+                            onClick={() => void runMutation(async () => {
+                              await updateTeamStatus(selectedTeam, selectedTeam.record.status === "active" ? "archived" : "active");
+                              await refreshTeams();
+                            }, selectedTeam.record.status === "active" ? "Team archived." : "Team restored.")}
+                            size="sm"
+                            variant="ghost"
+                          >
+                            {selectedTeam.record.status === "active" ? "Archive" : "Restore"}
+                          </Button>
+                        </div>
+                      </div>
+                      {selectedTeam.record.ownerAdminDid === viewer?.did ? (
+                        <div className="grid gap-3 sm:grid-cols-[minmax(0,1fr)_auto]">
+                          <Input onChange={(event) => setNewOwnerDid(event.target.value)} placeholder="New owner admin DID" value={newOwnerDid} />
+                          <Button disabled={!newOwnerDid.trim() || isMutating} onClick={() => void runMutation(async () => {
+                            await transferTeamOwner(selectedTeam.rkey, newOwnerDid.trim());
+                            setNewOwnerDid("");
+                            await refreshTeams();
+                          }, "Team ownership transferred.")} variant="outline">Transfer Owner</Button>
+                        </div>
+                      ) : null}
+                    </div>
+                  ) : null}
                 </CardContent>
               </Card>
 
@@ -386,7 +442,27 @@ export function AccountSettingsPage() {
                               <span className="truncate text-sm font-black">
                                 {member.record.memberDid}
                               </span>
-                              <Badge variant="secondary">{member.record.role}</Badge>
+                              <div className="flex items-center gap-2">
+                                <Badge variant="secondary">{member.record.role}</Badge>
+                                <Badge variant="outline">{member.record.status}</Badge>
+                                <Button
+                                  disabled={isMutating}
+                                  onClick={() =>
+                                    void runMutation(async () => {
+                                      await updateTeamMemberStatus(
+                                        selectedTeam.rkey,
+                                        member,
+                                        member.record.status === "active" ? "disabled" : "active"
+                                      );
+                                      await loadTeamDetails(selectedTeam.rkey);
+                                    }, member.record.status === "active" ? "Member disabled." : "Member restored.")
+                                  }
+                                  size="sm"
+                                  variant="ghost"
+                                >
+                                  {member.record.status === "active" ? "Disable" : "Restore"}
+                                </Button>
+                              </div>
                             </div>
                           ))
                         )}
@@ -432,6 +508,75 @@ export function AccountSettingsPage() {
 
                   <Card>
                     <CardHeader>
+                      <CardTitle>Invitations</CardTitle>
+                      <CardDescription>
+                        Invite by handle or DID. Membership is created only after the invited identity completes OAuth.
+                      </CardDescription>
+                    </CardHeader>
+                    <CardContent className="grid gap-4">
+                      <div className="grid gap-2">
+                        {teamInvites.map((invite) => (
+                          <div className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-border px-4 py-3" key={invite.id}>
+                            <div>
+                              <div className="text-sm font-black">{invite.invitedHandle ?? invite.invitedDid}</div>
+                              <div className="text-xs text-muted-foreground">Expires {new Date(invite.expiresAt).toLocaleString()}</div>
+                            </div>
+                            <div className="flex items-center gap-2">
+                              <Badge variant="outline">{invite.status}</Badge>
+                              {invite.status === "pending" ? (
+                                <Link className="text-xs font-black text-primary underline" href={`/invite/${invite.token}`}>
+                                  Acceptance link
+                                </Link>
+                              ) : null}
+                              {invite.status === "pending" ? (
+                                <Button
+                                  disabled={isMutating}
+                                  onClick={() => void runMutation(async () => {
+                                    await revokeTeamInvite(invite.id);
+                                    await loadTeamDetails(selectedTeam.rkey);
+                                  }, "Invitation revoked.")}
+                                  size="sm"
+                                  variant="ghost"
+                                >
+                                  Revoke
+                                </Button>
+                              ) : null}
+                            </div>
+                          </div>
+                        ))}
+                        {teamInvites.length === 0 ? <div className="rounded-2xl bg-muted px-4 py-3 text-sm text-muted-foreground">No invitations yet.</div> : null}
+                      </div>
+                      <div className="grid gap-3 sm:grid-cols-[minmax(0,1fr)_9rem_auto]">
+                        <Input
+                          placeholder="handle.example or did:plc:…"
+                          value={newInviteIdentity}
+                          onChange={(event) => setNewInviteIdentity(event.target.value)}
+                        />
+                        <select
+                          aria-label="Invitation role"
+                          className="h-11 rounded-2xl border border-border bg-card px-3 text-sm font-black"
+                          onChange={(event) => setNewInviteRole(event.target.value as TeamRole)}
+                          value={newInviteRole}
+                        >
+                          <option value="user">User</option>
+                          <option value="admin">Admin</option>
+                        </select>
+                        <Button disabled={!newInviteIdentity.trim() || isMutating} onClick={() => void runMutation(async () => {
+                          const identity = newInviteIdentity.trim();
+                          await createTeamInvite(
+                            selectedTeam.rkey,
+                            identity.startsWith("did:") ? { invitedDid: identity } : { invitedHandle: identity.replace(/^@/, "") },
+                            newInviteRole
+                          );
+                          setNewInviteIdentity("");
+                          await loadTeamDetails(selectedTeam.rkey);
+                        }, "Invitation created.")}>Invite</Button>
+                      </div>
+                    </CardContent>
+                  </Card>
+
+                  <Card>
+                    <CardHeader>
                       <CardTitle>Groups</CardTitle>
                       <CardDescription>
                         Permission bundles for members and brand grants.
@@ -454,7 +599,25 @@ export function AccountSettingsPage() {
                                 <span className="truncate text-sm font-black">
                                   {group.record.name}
                                 </span>
-                                <Badge variant="secondary">{memberDids.length} members</Badge>
+                                <div className="flex items-center gap-2">
+                                  <Badge variant="secondary">{memberDids.length} members</Badge>
+                                  <Badge variant="outline">{group.record.status ?? "active"}</Badge>
+                                  <Button
+                                    disabled={isMutating}
+                                    onClick={() => void runMutation(async () => {
+                                      await updateTeamGroupStatus(
+                                        selectedTeam.rkey,
+                                        group,
+                                        (group.record.status ?? "active") === "active" ? "archived" : "active"
+                                      );
+                                      await loadTeamDetails(selectedTeam.rkey);
+                                    }, (group.record.status ?? "active") === "active" ? "Group archived." : "Group restored.")}
+                                    size="sm"
+                                    variant="ghost"
+                                  >
+                                    {(group.record.status ?? "active") === "active" ? "Archive" : "Restore"}
+                                  </Button>
+                                </div>
                               </div>
                               <div className="grid gap-1 text-xs font-semibold text-muted-foreground">
                                 {memberDids.slice(0, 4).map((did) => (
@@ -473,6 +636,16 @@ export function AccountSettingsPage() {
                           );
                         })
                       )}
+                      <div className="grid gap-3 sm:grid-cols-[minmax(0,1fr)_auto]">
+                        <Input onChange={(event) => setNewGroupName(event.target.value)} placeholder="New group name" value={newGroupName} />
+                        <Button disabled={!newGroupName.trim() || isMutating} onClick={() => void runMutation(async () => {
+                          await createTeamGroup(selectedTeam.rkey, newGroupName.trim());
+                          setNewGroupName("");
+                          await loadTeamDetails(selectedTeam.rkey);
+                        }, "Group created.")}>
+                          <Plus data-icon="inline-start" /> Add Group
+                        </Button>
+                      </div>
                     </CardContent>
                   </Card>
 
@@ -498,7 +671,24 @@ export function AccountSettingsPage() {
 	                              <span className="truncate text-sm font-black">
 	                                {accountLabel(brand.record.brandDid)}
 	                              </span>
-                              <Badge variant="secondary">{brand.record.status}</Badge>
+                              <div className="flex items-center gap-2">
+                                <Badge variant="secondary">{brand.record.status}</Badge>
+                                <Button
+                                  disabled={isMutating}
+                                  onClick={() => void runMutation(async () => {
+                                    await updateBrandStatus(
+                                      selectedTeam.rkey,
+                                      brand.record.brandDid,
+                                      brand.record.status === "active" ? "disabled" : "active"
+                                    );
+                                    await loadTeamDetails(selectedTeam.rkey);
+                                  }, brand.record.status === "active" ? "Brand disabled." : "Brand restored.")}
+                                  size="sm"
+                                  variant="ghost"
+                                >
+                                  {brand.record.status === "active" ? "Disable" : "Restore"}
+                                </Button>
+                              </div>
                             </div>
                           ))
                         )}
@@ -586,6 +776,62 @@ export function AccountSettingsPage() {
                       {selectedAccount?.did}
                     </div>
                   </div>
+                  <div className="flex flex-wrap gap-2">
+                    {selectedAccount && !selectedAccount.isDefault ? (
+                      <Button
+                        disabled={isMutating}
+                        onClick={() => void runMutation(async () => {
+                          await setDefaultAccount(selectedAccount.did);
+                          setAccounts(await listAccounts());
+                        }, "Default account updated.")}
+                        size="sm"
+                        variant="outline"
+                      >
+                        Make Default
+                      </Button>
+                    ) : null}
+                    {selectedAccount && selectedAccount.did !== viewer?.did ? (
+                      <Button
+                        disabled={isMutating}
+                        onClick={() => void runMutation(async () => {
+                          await disconnectAccount(selectedAccount.did);
+                          const loaded = await listAccounts();
+                          setAccounts(loaded);
+                          setSelectedAccountDid(viewer?.did ?? loaded[0]?.did ?? null);
+                        }, "Connected account removed.")}
+                        size="sm"
+                        variant="ghost"
+                      >
+                        Disconnect
+                      </Button>
+                    ) : null}
+                  </div>
+                  {proEnabled ? (
+                    <div className="grid gap-3 rounded-2xl border border-border p-3 sm:grid-cols-[minmax(0,1fr)_auto]">
+                      <div>
+                        <Input
+                          aria-label="Account handle to connect"
+                          onChange={(event) => setNewConnectionHandle(event.target.value)}
+                          placeholder="brand.example"
+                          value={newConnectionHandle}
+                        />
+                        <p className="mt-2 text-xs text-muted-foreground">
+                          Legacy secondary ownership is never guessed. Reconnect each older account here to establish explicit access.
+                        </p>
+                      </div>
+                      <Button
+                        disabled={!newConnectionHandle.trim()}
+                        onClick={() => {
+                          window.location.href = startOAuth(newConnectionHandle, {
+                            purpose: "connect_account",
+                            returnTo: "/app/account",
+                          });
+                        }}
+                      >
+                        Connect Account
+                      </Button>
+                    </div>
+                  ) : null}
                   {selectedAccount?.status === "needs_reauth" ? (
                     <div className="flex flex-col gap-3 rounded-2xl border border-destructive/30 px-4 py-3">
                       <p className="text-xs font-semibold text-muted-foreground">
@@ -595,7 +841,10 @@ export function AccountSettingsPage() {
                       <Button
                         onClick={() => {
                           window.location.href = selectedAccount.handle
-                            ? startOAuth(selectedAccount.handle)
+                            ? startOAuth(selectedAccount.handle, {
+                                purpose: "brand_connection",
+                                returnTo: "/app/account",
+                              })
                             : "/app#connect-account";
                         }}
                         size="sm"
@@ -617,8 +866,36 @@ export function AccountSettingsPage() {
                     </CardDescription>
                   </CardHeader>
                   <CardContent className="grid gap-4">
+                    <div className="grid gap-2">
+                      {brandGrants.filter((grant) => grant.record.brandDid === selectedAccountDid).map((grant) => (
+                        <div className="grid gap-2 rounded-2xl border border-border p-3" key={grant.uri}>
+                          <div className="flex items-center justify-between gap-2">
+                            <span className="truncate text-xs font-black">{grant.record.grantee}</span>
+                            <Badge variant="outline">{grant.record.status ?? "active"}</Badge>
+                          </div>
+                          <div className="flex flex-wrap items-center gap-2">
+                            {grant.record.capabilities.map((capability) => <Badge key={capability} variant="secondary">{capability}</Badge>)}
+                            <Button
+                              disabled={isMutating}
+                              onClick={() => void runMutation(async () => {
+                                await updateBrandGrantStatus(
+                                  selectedTeam.rkey,
+                                  grant,
+                                  (grant.record.status ?? "active") === "active" ? "revoked" : "active"
+                                );
+                                await loadTeamDetails(selectedTeam.rkey);
+                              }, (grant.record.status ?? "active") === "active" ? "Grant revoked." : "Grant restored.")}
+                              size="sm"
+                              variant="ghost"
+                            >
+                              {(grant.record.status ?? "active") === "active" ? "Revoke" : "Restore"}
+                            </Button>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
                     <div className="flex flex-wrap gap-2">
-                      {(["create", "approve", "manage"] as BrandCapability[]).map(
+                      {(["create", "approve", "manage", "viewAnalytics"] as BrandCapability[]).map(
                         (capability) => (
                           <label
                             className="flex items-center gap-2 rounded-full bg-muted px-3 py-2 text-xs font-black"

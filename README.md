@@ -69,11 +69,20 @@ SKEJ_WORKER_ENABLED=true
 SKEJ_WORKER_INTERVAL_SECONDS=30
 SKEJ_LIVE_ATPROTO_ENABLED=false
 SKEJ_PRO_ENABLED=true
+SKEJ_ADMIN_DIDS=did:plc:replace-with-an-internal-admin
+SKEJ_ENGAGEMENT_ENABLED=true
+SKEJ_ENGAGEMENT_INTERVAL_SECONDS=900
+SKEJ_BSKY_APPVIEW_ORIGIN=https://public.api.bsky.app
 ```
 
 `SKEJ_PRO_ENABLED` gates the Skej Pro features (teams, calendar, approvals,
 posting on behalf of other accounts). It defaults to on everywhere except
 prod; when off, the Pro API routes are not registered at all.
+
+Skej Pro access is granted manually to actor DIDs or team URIs from the internal
+admin page. `SKEJ_ADMIN_DIDS` is a comma-separated allowlist for that page.
+Engagement collection defaults to 15-minute ticks against the public Bluesky
+AppView and can be disabled independently with `SKEJ_ENGAGEMENT_ENABLED=false`.
 
 Hosted defaults:
 
@@ -106,6 +115,10 @@ APP_ENV=dev
 SKEJ_PUBLIC_ORIGIN=https://api.testing.skej.at
 SKEJ_WEB_ORIGIN=https://testing.skej.at
 SKEJ_PRO_ENABLED=true
+SKEJ_ADMIN_DIDS=did:plc:replace-with-an-internal-admin
+SKEJ_ENGAGEMENT_ENABLED=true
+SKEJ_ENGAGEMENT_INTERVAL_SECONDS=900
+SKEJ_BSKY_APPVIEW_ORIGIN=https://public.api.bsky.app
 ```
 
 ```bash

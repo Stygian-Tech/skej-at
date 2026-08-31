@@ -155,13 +155,25 @@ public enum PostSourceFormat: String, Codable, CaseIterable, Sendable {
     case markdown
 }
 
+public struct ResolvedMention: Codable, Equatable, Sendable {
+    public let handle: String
+    public let did: String
+
+    public init(handle: String, did: String) {
+        self.handle = handle
+        self.did = did
+    }
+}
+
 public struct PostSource: Codable, Equatable, Sendable {
     public let format: PostSourceFormat
     public let text: String
+    public let mentions: [ResolvedMention]?
 
-    public init(format: PostSourceFormat, text: String) {
+    public init(format: PostSourceFormat, text: String, mentions: [ResolvedMention]? = nil) {
         self.format = format
         self.text = text
+        self.mentions = mentions
     }
 }
 
@@ -353,6 +365,8 @@ public struct SkejScheduleRecord: Codable, Equatable, Sendable {
     public var publishRkey: String
     public var publishedUri: String?
     public var publishedCid: String?
+    public var calendarEventUri: String?
+    public var calendarEventCid: String?
     public var publishedPosts: [PublishedPostReference]
     public var retry: RetryState
     public var lastError: ScheduleError?
@@ -387,6 +401,8 @@ public struct SkejScheduleRecord: Codable, Equatable, Sendable {
         publishRkey: String,
         publishedUri: String? = nil,
         publishedCid: String? = nil,
+        calendarEventUri: String? = nil,
+        calendarEventCid: String? = nil,
         publishedPosts: [PublishedPostReference] = [],
         retry: RetryState = RetryState(),
         lastError: ScheduleError? = nil,
@@ -411,6 +427,8 @@ public struct SkejScheduleRecord: Codable, Equatable, Sendable {
         self.publishRkey = publishRkey
         self.publishedUri = publishedUri
         self.publishedCid = publishedCid
+        self.calendarEventUri = calendarEventUri
+        self.calendarEventCid = calendarEventCid
         self.publishedPosts = publishedPosts
         self.retry = retry
         self.lastError = lastError
@@ -460,6 +478,8 @@ public struct SkejScheduleRecord: Codable, Equatable, Sendable {
         self.publishRkey = try container.decodeIfPresent(String.self, forKey: .publishRkey) ?? ATProtoTID.generate()
         self.publishedUri = try container.decodeIfPresent(String.self, forKey: .publishedUri)
         self.publishedCid = try container.decodeIfPresent(String.self, forKey: .publishedCid)
+        self.calendarEventUri = try container.decodeIfPresent(String.self, forKey: .calendarEventUri)
+        self.calendarEventCid = try container.decodeIfPresent(String.self, forKey: .calendarEventCid)
         self.publishedPosts = try container.decodeIfPresent(
             [PublishedPostReference].self,
             forKey: .publishedPosts
@@ -500,6 +520,8 @@ public struct SkejScheduleRecord: Codable, Equatable, Sendable {
         try container.encode(publishRkey, forKey: .publishRkey)
         try container.encodeIfPresent(publishedUri, forKey: .publishedUri)
         try container.encodeIfPresent(publishedCid, forKey: .publishedCid)
+        try container.encodeIfPresent(calendarEventUri, forKey: .calendarEventUri)
+        try container.encodeIfPresent(calendarEventCid, forKey: .calendarEventCid)
         if !publishedPosts.isEmpty {
             try container.encode(publishedPosts, forKey: .publishedPosts)
         }
@@ -528,6 +550,8 @@ public struct SkejScheduleRecord: Codable, Equatable, Sendable {
         case publishRkey
         case publishedUri
         case publishedCid
+        case calendarEventUri
+        case calendarEventCid
         case publishedPosts
         case retry
         case lastError
@@ -568,10 +592,21 @@ public enum MembershipStatus: String, Codable, Sendable {
     case disabled
 }
 
+public enum TeamGroupStatus: String, Codable, Sendable {
+    case active
+    case archived
+}
+
+public enum BrandGrantStatus: String, Codable, Sendable {
+    case active
+    case revoked
+}
+
 public enum BrandCapability: String, Codable, CaseIterable, Sendable {
     case create
     case approve
     case manage
+    case viewAnalytics
 }
 
 public enum GrantGranteeType: String, Codable, Sendable {
@@ -661,6 +696,7 @@ public struct TeamGroupRecord: Codable, Equatable, Sendable {
     public var name: String
     public var memberDids: [String]
     public var brandGrantUris: [String]
+    public var status: TeamGroupStatus
     public var createdAt: String
     public var updatedAt: String
 
@@ -670,6 +706,7 @@ public struct TeamGroupRecord: Codable, Equatable, Sendable {
         name: String,
         memberDids: [String] = [],
         brandGrantUris: [String] = [],
+        status: TeamGroupStatus = .active,
         createdAt: String,
         updatedAt: String
     ) {
@@ -678,6 +715,7 @@ public struct TeamGroupRecord: Codable, Equatable, Sendable {
         self.name = name
         self.memberDids = memberDids
         self.brandGrantUris = brandGrantUris
+        self.status = status
         self.createdAt = createdAt
         self.updatedAt = updatedAt
     }
@@ -688,8 +726,21 @@ public struct TeamGroupRecord: Codable, Equatable, Sendable {
         case name
         case memberDids
         case brandGrantUris
+        case status
         case createdAt
         case updatedAt
+    }
+
+    public init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        type = try values.decodeIfPresent(String.self, forKey: .type) ?? "at.skej.team.group"
+        teamUri = try values.decode(String.self, forKey: .teamUri)
+        name = try values.decode(String.self, forKey: .name)
+        memberDids = try values.decodeIfPresent([String].self, forKey: .memberDids) ?? []
+        brandGrantUris = try values.decodeIfPresent([String].self, forKey: .brandGrantUris) ?? []
+        status = try values.decodeIfPresent(TeamGroupStatus.self, forKey: .status) ?? .active
+        createdAt = try values.decode(String.self, forKey: .createdAt)
+        updatedAt = try values.decode(String.self, forKey: .updatedAt)
     }
 }
 
@@ -700,6 +751,7 @@ public struct BrandGrantRecord: Codable, Equatable, Sendable {
     public var granteeType: GrantGranteeType
     public var grantee: String
     public var capabilities: [BrandCapability]
+    public var status: BrandGrantStatus
     public var createdAt: String
     public var updatedAt: String
 
@@ -710,6 +762,7 @@ public struct BrandGrantRecord: Codable, Equatable, Sendable {
         granteeType: GrantGranteeType,
         grantee: String,
         capabilities: [BrandCapability],
+        status: BrandGrantStatus = .active,
         createdAt: String,
         updatedAt: String
     ) {
@@ -719,6 +772,7 @@ public struct BrandGrantRecord: Codable, Equatable, Sendable {
         self.granteeType = granteeType
         self.grantee = grantee
         self.capabilities = capabilities
+        self.status = status
         self.createdAt = createdAt
         self.updatedAt = updatedAt
     }
@@ -730,8 +784,22 @@ public struct BrandGrantRecord: Codable, Equatable, Sendable {
         case granteeType
         case grantee
         case capabilities
+        case status
         case createdAt
         case updatedAt
+    }
+
+    public init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        type = try values.decodeIfPresent(String.self, forKey: .type) ?? "at.skej.team.brandGrant"
+        teamUri = try values.decode(String.self, forKey: .teamUri)
+        brandDid = try values.decode(String.self, forKey: .brandDid)
+        granteeType = try values.decode(GrantGranteeType.self, forKey: .granteeType)
+        grantee = try values.decode(String.self, forKey: .grantee)
+        capabilities = try values.decodeIfPresent([BrandCapability].self, forKey: .capabilities) ?? []
+        status = try values.decodeIfPresent(BrandGrantStatus.self, forKey: .status) ?? .active
+        createdAt = try values.decode(String.self, forKey: .createdAt)
+        updatedAt = try values.decode(String.self, forKey: .updatedAt)
     }
 }
 
@@ -959,6 +1027,11 @@ public struct BrandSummary: Codable, Equatable, Sendable {
 public struct EffectiveBrandPermission: Codable, Equatable, Sendable {
     public let brandDid: String
     public let capabilities: [BrandCapability]
+
+    public init(brandDid: String, capabilities: [BrandCapability]) {
+        self.brandDid = brandDid
+        self.capabilities = capabilities
+    }
 }
 
 public struct BrandProfile: Codable, Equatable, Sendable {
@@ -1063,11 +1136,13 @@ public struct UpsertGroupRequest: Codable, Sendable {
     public let name: String
     public let memberDids: [String]?
     public let brandGrantUris: [String]?
+    public let status: TeamGroupStatus?
 
-    public init(name: String, memberDids: [String]? = nil, brandGrantUris: [String]? = nil) {
+    public init(name: String, memberDids: [String]? = nil, brandGrantUris: [String]? = nil, status: TeamGroupStatus? = nil) {
         self.name = name
         self.memberDids = memberDids
         self.brandGrantUris = brandGrantUris
+        self.status = status
     }
 }
 
@@ -1076,12 +1151,14 @@ public struct UpsertBrandGrantRequest: Codable, Sendable {
     public let granteeType: GrantGranteeType
     public let grantee: String
     public let capabilities: [BrandCapability]
+    public let status: BrandGrantStatus?
 
-    public init(brandDid: String, granteeType: GrantGranteeType, grantee: String, capabilities: [BrandCapability]) {
+    public init(brandDid: String, granteeType: GrantGranteeType, grantee: String, capabilities: [BrandCapability], status: BrandGrantStatus? = nil) {
         self.brandDid = brandDid
         self.granteeType = granteeType
         self.grantee = grantee
         self.capabilities = capabilities
+        self.status = status
     }
 }
 

@@ -116,6 +116,35 @@ public struct ATProtoPDSClient: PDSClient {
         try await store.deleteScheduleRecord(did: did, rkey: rkey)
     }
 
+    public func writeCalendarEvent(
+        did: String,
+        rkey: String,
+        record: CommunityCalendarEventRecord
+    ) async throws -> CalendarEventReference {
+        let session = try await authenticatedSession(did: did)
+        let responseData = try await xrpc(
+            session: session,
+            method: "POST",
+            path: "com.atproto.repo.putRecord",
+            body: [
+                "repo": .string(did),
+                "collection": .string(CalendarEventProjection.collection),
+                "rkey": .string(rkey),
+                "validate": .bool(false),
+                "record": try record.skejJSONValue(),
+            ]
+        )
+        let created = try JSONDecoder().decode(CreateRecordResponse.self, from: responseData)
+        try await store.writeProtocolRecord(
+            did: did,
+            collection: CalendarEventProjection.collection,
+            rkey: rkey,
+            record: record,
+            now: Timestamp.iso8601()
+        )
+        return CalendarEventReference(uri: created.uri, cid: created.cid)
+    }
+
     public func uploadBlob(
         did: String,
         data: Data,

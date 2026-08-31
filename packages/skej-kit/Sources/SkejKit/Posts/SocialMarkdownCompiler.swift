@@ -17,7 +17,10 @@ public struct SocialMarkdownCompilation: Equatable, Sendable {
 /// locally. This is intentionally not a general HTML or CommonMark renderer;
 /// unsupported and malformed constructs remain literal so input is never lost.
 public enum SocialMarkdownCompiler {
-    public static func compile(_ markdown: String) -> SocialMarkdownCompilation {
+    public static func compile(
+        _ markdown: String,
+        resolvedMentions: [ResolvedMention] = []
+    ) -> SocialMarkdownCompilation {
         var buffer = CompilationBuffer()
         let normalized = markdown
             .replacingOccurrences(of: "\r\n", with: "\n")
@@ -52,8 +55,35 @@ public enum SocialMarkdownCompiler {
         }
 
         appendTagFacets(to: &buffer)
+        appendMentionFacets(resolvedMentions, to: &buffer)
         buffer.sortFacets()
         return SocialMarkdownCompilation(text: buffer.text, facets: buffer.facets)
+    }
+
+    public static func project(_ source: PostSource) -> SocialMarkdownCompilation {
+        let compilation = compile(source.text, resolvedMentions: source.mentions ?? [])
+        guard let first = compilation.text.firstIndex(where: { !$0.isWhitespace }),
+              let last = compilation.text.lastIndex(where: { !$0.isWhitespace })
+        else {
+            return SocialMarkdownCompilation(text: "", facets: [])
+        }
+        let end = compilation.text.index(after: last)
+        let text = String(compilation.text[first..<end])
+        let leadingBytes = compilation.text[..<first].utf8.count
+        let finalBytes = text.utf8.count
+        let facets: [JSONValue] = compilation.facets.compactMap { facet -> JSONValue? in
+            guard let range = CompilationBuffer.byteRange(facet),
+                  range.lowerBound >= leadingBytes,
+                  range.upperBound <= leadingBytes + finalBytes,
+                  case var .object(object) = facet
+            else { return nil }
+            object["index"] = .object([
+                "byteStart": .number(Double(range.lowerBound - leadingBytes)),
+                "byteEnd": .number(Double(range.upperBound - leadingBytes)),
+            ])
+            return .object(object)
+        }
+        return SocialMarkdownCompilation(text: text, facets: facets)
     }
 
     private static func compileInline(_ source: Substring, into buffer: inout CompilationBuffer) {
@@ -116,7 +146,8 @@ public enum SocialMarkdownCompiler {
                 }
             }
 
-            if hasPrefix("https://", at: index, in: source) || hasPrefix("http://", at: index, in: source) {
+            if hasCaseInsensitivePrefix("https://", at: index, in: source) ||
+                hasCaseInsensitivePrefix("http://", at: index, in: source) {
                 let candidateEnd = bareURLCandidateEnd(startingAt: index, in: source)
                 let candidate = String(source[index..<candidateEnd])
                 let link = trimmedBareURL(candidate)
@@ -187,16 +218,19 @@ public enum SocialMarkdownCompiler {
 
     private static func isExcludedBlock(_ line: String) -> Bool {
         let trimmed = line.trimmingCharacters(in: .whitespaces)
-        if trimmed.hasPrefix("# ") || trimmed.hasPrefix("## ") || trimmed.hasPrefix("### ") ||
-            trimmed.hasPrefix("#### ") || trimmed.hasPrefix("##### ") || trimmed.hasPrefix("###### ") {
+        let hashes = trimmed.prefix(while: { $0 == "#" })
+        if (1 ... 6).contains(hashes.count),
+           trimmed.dropFirst(hashes.count).first?.isWhitespace == true {
             return true
         }
-        if trimmed.hasPrefix("|"), trimmed.hasSuffix("|") {
+        if trimmed.hasPrefix("|") {
             return true
         }
-        if trimmed.hasPrefix("- [ ] ") || trimmed.hasPrefix("- [x] ") || trimmed.hasPrefix("- [X] ") ||
-            trimmed.hasPrefix("* [ ] ") || trimmed.hasPrefix("* [x] ") || trimmed.hasPrefix("* [X] ") {
-            return true
+        if let marker = trimmed.first, ["-", "+", "*"].contains(marker) {
+            let remainder = trimmed.dropFirst().drop(while: { $0.isWhitespace })
+            if remainder.hasPrefix("[ ] ") || remainder.hasPrefix("[x] ") || remainder.hasPrefix("[X] ") {
+                return true
+            }
         }
         return trimmed == "---" || trimmed == "***" || trimmed == "___"
     }
@@ -342,6 +376,38 @@ public enum SocialMarkdownCompiler {
         }
     }
 
+    private static func appendMentionFacets(
+        _ mentions: [ResolvedMention],
+        to buffer: inout CompilationBuffer
+    ) {
+        let resolved = Dictionary(
+            mentions.map { mention in
+                (mention.handle.trimmingPrefix("@").lowercased(), mention.did)
+            },
+            uniquingKeysWith: { first, _ in first }
+        )
+        guard !resolved.isEmpty else { return }
+        let expression = try! NSRegularExpression(
+            pattern: #"(?:^|[\s\(\[\{\:>\"'])(@[A-Za-z0-9](?:[A-Za-z0-9.-]{0,251}[A-Za-z0-9])?)"#,
+            options: [.caseInsensitive]
+        )
+        let fullRange = NSRange(buffer.text.startIndex..<buffer.text.endIndex, in: buffer.text)
+        for match in expression.matches(in: buffer.text, range: fullRange) {
+            guard let range = Range(match.range(at: 1), in: buffer.text) else { continue }
+            let next = range.upperBound < buffer.text.endIndex ? buffer.text[range.upperBound] : nil
+            if let next, next.isLetter || next.isNumber || ".-".contains(next) { continue }
+            let display = buffer.text[range]
+            let handle = display.dropFirst().lowercased()
+            guard let did = resolved[handle], did.hasPrefix("did:") else { continue }
+            let byteStart = buffer.text[..<range.lowerBound].utf8.count
+            let byteEnd = byteStart + display.utf8.count
+            let byteRange = byteStart..<byteEnd
+            let occupied = buffer.facets.compactMap(CompilationBuffer.byteRange) + buffer.suppressedRanges
+            guard !occupied.contains(where: { $0.overlaps(byteRange) }) else { continue }
+            buffer.appendMentionFacet(byteStart: byteStart, byteEnd: byteEnd, did: did)
+        }
+    }
+
     private static func isEscapable(_ character: Character) -> Bool {
         "\\`*_{}[]()#+-.!~>".contains(character)
     }
@@ -352,6 +418,20 @@ public enum SocialMarkdownCompiler {
 
     private static func hasPrefix(_ prefix: String, at index: Substring.Index, in source: Substring) -> Bool {
         source[index...].hasPrefix(prefix)
+    }
+
+    private static func hasCaseInsensitivePrefix(
+        _ prefix: String,
+        at index: Substring.Index,
+        in source: Substring
+    ) -> Bool {
+        source[index...].prefix(prefix.count).lowercased() == prefix
+    }
+}
+
+private extension String {
+    func trimmingPrefix(_ prefix: Character) -> String {
+        first == prefix ? String(dropFirst()) : self
     }
 }
 
@@ -406,6 +486,21 @@ private struct CompilationBuffer {
                 .object([
                     "$type": .string("app.bsky.richtext.facet#tag"),
                     "tag": .string(tag),
+                ]),
+            ]),
+        ]))
+    }
+
+    mutating func appendMentionFacet(byteStart: Int, byteEnd: Int, did: String) {
+        facets.append(.object([
+            "index": .object([
+                "byteStart": .number(Double(byteStart)),
+                "byteEnd": .number(Double(byteEnd)),
+            ]),
+            "features": .array([
+                .object([
+                    "$type": .string("app.bsky.richtext.facet#mention"),
+                    "did": .string(did),
                 ]),
             ]),
         ]))

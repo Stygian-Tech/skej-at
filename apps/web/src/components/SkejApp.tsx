@@ -25,6 +25,7 @@ import {
 import Link from "next/link";
 import * as React from "react";
 
+import { AuthenticatedNav } from "@/components/AuthenticatedNav";
 import { OAuthLoginForm } from "@/components/OAuthLoginForm";
 import { SkejLogoMark } from "@/components/SkejLogoMark";
 import {
@@ -78,7 +79,6 @@ import {
 import { projectMarkdownPost } from "@/lib/socialMarkdown";
 import { cn } from "@/lib/utils";
 import {
-  CommunityCalendarEventRecord,
   ManagedAccount,
   PostPlan,
   ScheduledPostSummary,
@@ -230,71 +230,11 @@ function scheduleTitle(item: ScheduledPostSummary) {
   return item.record.title?.trim() || text || "Untitled post";
 }
 
-function calendarDayKey(value: string) {
-  return new Intl.DateTimeFormat("en-CA", {
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-  }).format(new Date(value));
-}
-
 function calendarDayLabel(value: string) {
   return new Intl.DateTimeFormat(undefined, {
     month: "short",
     day: "numeric",
   }).format(new Date(value));
-}
-
-function calendarMonthLabel(value: Date) {
-  return new Intl.DateTimeFormat(undefined, {
-    month: "long",
-    year: "numeric",
-  }).format(value);
-}
-
-function buildCalendarGridDays(monthDate: Date) {
-  const year = monthDate.getFullYear();
-  const month = monthDate.getMonth();
-  const first = new Date(year, month, 1);
-  const start = new Date(first);
-  start.setDate(first.getDate() - first.getDay());
-  return Array.from({ length: 42 }, (_, index) => {
-    const date = new Date(start);
-    date.setDate(start.getDate() + index);
-    return {
-      date,
-      key: calendarDayKey(date.toISOString()),
-      inMonth: date.getMonth() === month,
-    };
-  });
-}
-
-function buildCalendarEvent(item: ScheduledPostSummary): CommunityCalendarEventRecord {
-  const startsAt = item.scheduledAt;
-  const endsAt = new Date(new Date(startsAt).getTime() + 30 * 60_000).toISOString();
-  return {
-    $type: "community.lexicon.calendar.event",
-    name: scheduleTitle(item),
-    description: item.record.posts
-      .map((post) => projectMarkdownPost(post).text)
-      .filter(Boolean)
-      .join("\n\n"),
-    startsAt,
-    endsAt,
-    timezone: item.record.userTimezone,
-    status: item.status,
-    source: {
-      $type: "at.skej.schedule",
-      uri: item.scheduleUri,
-      did: item.did,
-      rkey: item.rkey,
-    },
-    content: {
-      recordType: item.record.recordType,
-      publishRkey: item.record.publishRkey,
-      publishedUri: item.publishedUri ?? item.record.publishedUri,
-    },
-  };
 }
 
 function upsertQueueItem(
@@ -433,9 +373,6 @@ export function SkejApp() {
     () => new Set()
   );
   const [scheduleOpen, setScheduleOpen] = React.useState(false);
-  const [calendarOpen, setCalendarOpen] = React.useState(false);
-  const [selectedCalendarDay, setSelectedCalendarDay] = React.useState<string | null>(null);
-  const [expandedCalendarEventUri, setExpandedCalendarEventUri] = React.useState<string | null>(null);
   const [selectedRkey, setSelectedRkey] = React.useState<string | null>(null);
   const [editingRkey, setEditingRkey] = React.useState<string | null>(null);
   const [isQueueLoading, setIsQueueLoading] = React.useState(false);
@@ -506,41 +443,6 @@ export function SkejApp() {
     }
     return Array.from(counts.entries()).slice(0, 7);
   }, [sortedQueue]);
-  const calendarEvents = React.useMemo(
-    () =>
-      sortedQueue
-        .map(buildCalendarEvent)
-        .sort((a, b) => a.startsAt.localeCompare(b.startsAt)),
-    [sortedQueue]
-  );
-  const calendarEventsByDay = React.useMemo(() => {
-    const grouped = new Map<string, CommunityCalendarEventRecord[]>();
-    for (const event of calendarEvents) {
-      const day = calendarDayKey(event.startsAt);
-      grouped.set(day, [...(grouped.get(day) ?? []), event]);
-    }
-    return grouped;
-  }, [calendarEvents]);
-  const visibleMonth = React.useMemo(() => {
-    if (calendarEvents[0]) return new Date(calendarEvents[0].startsAt);
-    return new Date();
-  }, [calendarEvents]);
-  const calendarMonths = React.useMemo(() => {
-    const start = new Date(visibleMonth.getFullYear(), visibleMonth.getMonth(), 1);
-    return Array.from({ length: 18 }, (_, index) => {
-      const monthDate = new Date(start);
-      monthDate.setMonth(start.getMonth() + index);
-      return {
-        key: `${monthDate.getFullYear()}-${monthDate.getMonth()}`,
-        date: monthDate,
-        days: buildCalendarGridDays(monthDate),
-      };
-    });
-  }, [visibleMonth]);
-  const selectedCalendarEvents = React.useMemo(() => {
-    const day = selectedCalendarDay ?? calendarDayKey(visibleMonth.toISOString());
-    return calendarEventsByDay.get(day) ?? [];
-  }, [calendarEventsByDay, selectedCalendarDay, visibleMonth]);
 
   const refreshSchedules = React.useCallback(async () => {
     setIsQueueLoading(true);
@@ -612,18 +514,6 @@ export function SkejApp() {
       window.clearTimeout(draftTimer);
     };
   }, []);
-
-  React.useEffect(() => {
-    if (!calendarOpen) return;
-    const previousBodyOverflow = document.body.style.overflow;
-    const previousDocumentOverflow = document.documentElement.style.overflow;
-    document.body.style.overflow = "hidden";
-    document.documentElement.style.overflow = "hidden";
-    return () => {
-      document.body.style.overflow = previousBodyOverflow;
-      document.documentElement.style.overflow = previousDocumentOverflow;
-    };
-  }, [calendarOpen]);
 
   React.useEffect(() => {
     if (!selectedAccountDid) return;
@@ -1088,6 +978,7 @@ export function SkejApp() {
               )}
             </div>
         </header>
+        {isAuthenticated ? <AuthenticatedNav /> : null}
 
         <div className="sticky top-[5.75rem] z-30 flex items-center gap-2 rounded-[1.25rem] border border-accent/70 bg-accent px-3 py-2 text-xs font-black text-accent-foreground shadow-[0_10px_28px_rgba(216,188,83,0.18)]">
           <span>Work in progress. Keep a copy of mission-critical content.</span>
@@ -1628,15 +1519,17 @@ export function SkejApp() {
                   </div>
                   <div className="flex items-center gap-2">
                     {proEnabled ? (
-                      <Button
-                        variant="outline"
-                        size="sm"
-                        onClick={() => setCalendarOpen(true)}
-                        disabled={!isAuthenticated}
+                      <Link
+                        aria-disabled={!isAuthenticated}
+                        className={cn(
+                          "inline-flex min-h-8 items-center justify-center gap-2 rounded-lg border px-3 text-xs font-black transition hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+                          !isAuthenticated && "pointer-events-none opacity-50"
+                        )}
+                        href="/app/calendar"
                       >
                         <ArrowUpRight data-icon="inline-start" />
                         Calendar
-                      </Button>
+                      </Link>
                     ) : null}
                     <Button
                       variant="secondary"
@@ -1654,24 +1547,14 @@ export function SkejApp() {
                 {!proEnabled ? null : calendarDays.length > 0 ? (
                   <div className="flex gap-2 overflow-x-auto pb-1">
                     {calendarDays.map(([day, count]) => (
-                      <button
-                        type="button"
+                      <Link
                         className="flex min-w-24 items-center justify-between gap-3 rounded-full bg-muted px-3 py-2 text-left text-xs font-bold transition hover:bg-secondary"
+                        href="/app/calendar"
                         key={day}
-                        onClick={() => {
-                          const match = calendarEvents.find(
-                            (event) => calendarDayLabel(event.startsAt) === day
-                          );
-                          setSelectedCalendarDay(
-                            match ? calendarDayKey(match.startsAt) : selectedCalendarDay
-                          );
-                          setExpandedCalendarEventUri(null);
-                          setCalendarOpen(true);
-                        }}
                       >
                         <span>{day}</span>
                         <span>{count}</span>
-                      </button>
+                      </Link>
                     ))}
                   </div>
                 ) : (
@@ -1850,214 +1733,6 @@ export function SkejApp() {
           </aside>
         </section>
       </div>
-
-      {proEnabled && calendarOpen ? (
-        <div
-          aria-labelledby="content-calendar-title"
-          aria-modal="true"
-          className="fixed inset-0 z-[100] overflow-hidden bg-foreground/30 p-4 backdrop-blur-sm"
-          onClick={() => setCalendarOpen(false)}
-          role="dialog"
-        >
-          <div
-            className="mx-auto flex h-[calc(100dvh-2rem)] max-w-6xl flex-col gap-4 rounded-[2rem] border border-border bg-card p-4 shadow-[0_16px_48px_rgba(35,31,32,0.18)] sm:p-5"
-            onClick={(event) => event.stopPropagation()}
-          >
-            <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
-              <div>
-                <div className="flex items-center gap-2">
-                  <CalendarClock />
-                  <h2 className="text-2xl font-black" id="content-calendar-title">
-                    Content Calendar
-                  </h2>
-                </div>
-                <p className="mt-1 text-sm font-semibold text-muted-foreground">
-                  {selectedAccount?.handle ?? selectedAccount?.displayName ?? "Selected account"}
-                </p>
-              </div>
-              <div className="flex items-center gap-2">
-                <Badge variant="sunny">
-                  community.lexicon.calendar.event
-                </Badge>
-                <Button
-                  variant="ghost"
-                  size="icon"
-                  aria-label="Close Content Calendar"
-                  onClick={() => setCalendarOpen(false)}
-                >
-                  <X />
-                </Button>
-              </div>
-            </div>
-
-            <div className="grid min-h-0 flex-1 gap-4 lg:grid-cols-[minmax(0,1.45fr)_minmax(320px,0.75fr)]">
-              <section className="flex min-h-0 flex-col rounded-[1.5rem] border border-border bg-background/50 p-3 sm:p-4">
-                <div className="mb-3 flex shrink-0 items-center justify-between gap-3">
-                  <div>
-                    <h3 className="text-lg font-black">Calendar</h3>
-                    <p className="text-sm font-semibold text-muted-foreground">
-                      {calendarEvents.length} scheduled calendar records across 18 months.
-                    </p>
-                  </div>
-                  <Button variant="outline" size="sm" onClick={refreshSchedules}>
-                    <RefreshCw data-icon="inline-start" />
-                    Refresh
-                  </Button>
-                </div>
-                <div className="min-h-0 flex-1 overflow-y-auto pr-1">
-                  <div className="flex flex-col gap-5">
-                    {calendarMonths.map((month) => (
-                      <div className="grid gap-1" key={month.key}>
-                        <h4 className="px-1 text-base font-black">
-                          {calendarMonthLabel(month.date)}
-                        </h4>
-                        <div className="grid grid-cols-7 gap-1 text-center text-xs font-black text-muted-foreground">
-                          {["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"].map((day) => (
-                            <div className="py-2" key={day}>
-                              {day}
-                            </div>
-                          ))}
-                        </div>
-                        <div className="grid grid-cols-7 gap-1">
-                          {month.days.filter((day) => day.inMonth).map((day, index) => {
-                            const events = calendarEventsByDay.get(day.key) ?? [];
-                            const isSelected = selectedCalendarDay === day.key;
-                            return (
-                              <button
-                                type="button"
-                                className={cn(
-                                  "flex min-h-24 flex-col items-start gap-1 rounded-xl border p-2 text-left transition",
-                                  isSelected
-                                    ? "border-primary bg-secondary"
-                                    : "border-border",
-                                  events.length > 0 ? "hover:bg-secondary" : "cursor-default"
-                                )}
-                                key={`${month.key}-${day.key}`}
-                                style={
-                                  index === 0
-                                    ? { gridColumnStart: day.date.getDay() + 1 }
-                                    : undefined
-                                }
-                                onClick={() => {
-                                  if (events.length > 0) {
-                                    setSelectedCalendarDay(day.key);
-                                    setExpandedCalendarEventUri(null);
-                                  }
-                                }}
-                              >
-                                <span className="text-xs font-black">
-                                  {day.date.getDate()}
-                                </span>
-                                {events.slice(0, 2).map((event) => (
-                                  <span
-                                    className="line-clamp-2 w-full rounded-lg bg-muted px-2 py-1 text-[11px] font-bold leading-4"
-                                    key={event.source.uri}
-                                  >
-                                    {event.name}
-                                  </span>
-                                ))}
-                                {events.length > 2 ? (
-                                  <span className="text-[11px] font-black text-muted-foreground">
-                                    +{events.length - 2} more
-                                  </span>
-                                ) : null}
-                              </button>
-                            );
-                          })}
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              </section>
-
-              <section className="flex min-h-0 flex-col gap-3 overflow-y-auto rounded-[1.5rem] border border-border bg-background/50 p-3 sm:p-4">
-                <div>
-                  <h3 className="text-lg font-black">Day Agenda</h3>
-                  <p className="text-sm font-semibold text-muted-foreground">
-                    ATmosphere-ready calendar records for scheduled content.
-                  </p>
-                </div>
-                {selectedCalendarEvents.length === 0 ? (
-                  <div className="rounded-xl bg-muted px-3 py-3 text-sm font-semibold text-muted-foreground">
-                    Pick a scheduled day to inspect its records.
-                  </div>
-                ) : (
-                  selectedCalendarEvents.map((event) => {
-                    const isExpanded = expandedCalendarEventUri === event.source.uri;
-                    return (
-                      <article
-                        className={cn(
-                          "flex flex-col gap-3 rounded-[1.25rem] border bg-card p-4 transition",
-                          isExpanded ? "border-primary bg-secondary" : "border-border"
-                        )}
-                        key={event.source.uri}
-                      >
-                        <button
-                          type="button"
-                          className="flex w-full items-start justify-between gap-3 text-left"
-                          aria-expanded={isExpanded}
-                          onClick={() => {
-                            setSelectedRkey(event.source.rkey);
-                            setExpandedCalendarEventUri(isExpanded ? null : event.source.uri);
-                          }}
-                        >
-                          <div>
-                            <div className="line-clamp-2 text-sm font-black">{event.name}</div>
-                            <div className="text-xs font-semibold text-muted-foreground">
-                              {formatSchedule(event.startsAt)}
-                            </div>
-                          </div>
-                          <Badge variant={statusVariant(event.status)}>
-                            {statusLabel(event.status)}
-                          </Badge>
-                        </button>
-                        {isExpanded ? (
-                          <div className="flex flex-col gap-3">
-                            {event.description ? (
-                              <div className="rounded-xl bg-card/80 px-3 py-2 text-sm font-semibold leading-6">
-                                {event.description}
-                              </div>
-                            ) : null}
-                            <div className="grid grid-cols-2 gap-2 text-xs font-bold text-muted-foreground">
-                              <div className="rounded-xl bg-muted px-3 py-2">
-                                Type
-                                <span className="block truncate text-foreground">
-                                  {event.content?.recordType}
-                                </span>
-                              </div>
-                              <div className="rounded-xl bg-muted px-3 py-2">
-                                Timezone
-                                <span className="block truncate text-foreground">
-                                  {event.timezone ?? "UTC"}
-                                </span>
-                              </div>
-                            </div>
-                            <div className="rounded-xl bg-muted px-3 py-2 text-xs font-bold text-muted-foreground">
-                              Source Schedule
-                              <span className="block break-all text-foreground">
-                                {event.source.uri}
-                              </span>
-                            </div>
-                            <details className="rounded-xl bg-muted px-3 py-2 text-xs font-semibold text-muted-foreground">
-                              <summary className="cursor-pointer font-black text-foreground">
-                                Calendar Record
-                              </summary>
-                              <pre className="mt-2 max-h-48 overflow-auto whitespace-pre-wrap break-words rounded-lg bg-background/70 p-2 text-[11px]">
-                                {JSON.stringify(event, null, 2)}
-                              </pre>
-                            </details>
-                          </div>
-                        ) : null}
-                      </article>
-                    );
-                  })
-                )}
-              </section>
-            </div>
-          </div>
-        </div>
-      ) : null}
 
       {scheduleOpen ? (
         <div

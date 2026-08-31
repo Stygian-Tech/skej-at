@@ -1,6 +1,7 @@
 "use client";
 
 import {
+  AtSign,
   Code2,
   FileCode2,
   Link2,
@@ -9,6 +10,7 @@ import * as React from "react";
 
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
+import { searchMentions } from "@/lib/api";
 import {
   SocialMarkdownCommand,
   applySocialMarkdownCommand,
@@ -16,7 +18,7 @@ import {
   projectMarkdownPost,
   projectionSegments,
 } from "@/lib/socialMarkdown";
-import type { PostPlan } from "@/lib/skejTypes";
+import type { MentionActor, PostPlan, ResolvedMention } from "@/lib/skejTypes";
 import { cn } from "@/lib/utils";
 
 interface SocialMarkdownEditorProps {
@@ -40,6 +42,28 @@ const COMMANDS: Array<{
   { command: "code", label: "Monospace", icon: Code2, shortcut: "⌘E" },
   { command: "code-block", label: "Code block", icon: FileCode2 },
 ];
+
+interface ActiveMention {
+  start: number;
+  end: number;
+  query: string;
+}
+
+function activeMentionAt(text: string, cursor: number): ActiveMention | null {
+  const before = text.slice(0, cursor);
+  const match = before.match(/(?:^|[\s([{:>"'])@([a-z0-9.-]{1,64})$/iu);
+  if (!match?.[1]) return null;
+  return {
+    start: cursor - match[1].length - 1,
+    end: cursor,
+    query: match[1],
+  };
+}
+
+function containsResolvedHandle(text: string, mention: ResolvedMention): boolean {
+  const escaped = mention.handle.replace(/^@/u, "").replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
+  return new RegExp(`(^|[\\s([{:>"'])@${escaped}(?=$|[^a-z0-9.-])`, "iu").test(text);
+}
 
 function shortcutCommand(event: React.KeyboardEvent<HTMLTextAreaElement>) {
   if (!(event.metaKey || event.ctrlKey) || event.altKey) return null;
@@ -149,7 +173,7 @@ export function SocialMarkdownPreview({
     <div className={cn("whitespace-pre-wrap break-words", className)} {...props}>
       {projection.text ? (
         segments.map((segment, segmentIndex) =>
-          segment.uri ? (
+          segment.kind === "link" && segment.uri ? (
             <a
               className="text-primary underline decoration-primary/40 underline-offset-2"
               href={segment.uri}
@@ -159,6 +183,23 @@ export function SocialMarkdownPreview({
             >
               {segment.text}
             </a>
+          ) : segment.kind === "mention" ? (
+            <span
+              className="rounded bg-violet-500/10 font-black text-violet-700 dark:text-violet-300"
+              data-facet="mention"
+              key={`${segmentIndex}-${segment.did}`}
+              title={segment.did}
+            >
+              {segment.text}
+            </span>
+          ) : segment.kind === "tag" ? (
+            <span
+              className="rounded bg-primary/10 font-black text-primary"
+              data-facet="tag"
+              key={`${segmentIndex}-${segment.tag}`}
+            >
+              {segment.text}
+            </span>
           ) : (
             <React.Fragment key={segmentIndex}>
               {renderCodePresentation(segment.text, `segment-${segmentIndex}`)}
@@ -181,6 +222,11 @@ export const SocialMarkdownEditor = React.memo(function SocialMarkdownEditor({
   const pendingSelection = React.useRef<{ start: number; end: number } | null>(null);
   const source = markdownSourceForPost(post);
   const projection = React.useMemo(() => projectMarkdownPost(post), [post]);
+  const [activeMention, setActiveMention] = React.useState<ActiveMention | null>(null);
+  const [mentionResults, setMentionResults] = React.useState<MentionActor[]>([]);
+  const [activeMentionIndex, setActiveMentionIndex] = React.useState(0);
+  const [mentionLoading, setMentionLoading] = React.useState(false);
+  const mentionQuery = activeMention?.query;
 
   React.useLayoutEffect(() => {
     const selection = pendingSelection.current;
@@ -195,15 +241,67 @@ export const SocialMarkdownEditor = React.memo(function SocialMarkdownEditor({
   }, [source]);
 
   const updateSource = React.useCallback(
-    (text: string) => {
+    (text: string, mentions: ResolvedMention[] = post.source?.mentions ?? []) => {
+      const retainedMentions = mentions.filter((mention) =>
+        containsResolvedHandle(text, mention)
+      );
       onChange(
         projectMarkdownPost({
           ...post,
-          source: { format: "markdown", text },
+          source: {
+            format: "markdown",
+            text,
+            mentions: retainedMentions.length ? retainedMentions : undefined,
+          },
         })
       );
     },
     [onChange, post]
+  );
+
+  React.useEffect(() => {
+    if (!mentionQuery) return;
+    const controller = new AbortController();
+    const timer = window.setTimeout(() => {
+      searchMentions(mentionQuery, controller.signal)
+        .then((actors) => {
+          setMentionResults(actors);
+          setActiveMentionIndex(0);
+        })
+        .catch(() => {
+          if (!controller.signal.aborted) setMentionResults([]);
+        })
+        .finally(() => {
+          if (!controller.signal.aborted) setMentionLoading(false);
+        });
+    }, 120);
+    return () => {
+      window.clearTimeout(timer);
+      controller.abort();
+    };
+  }, [mentionQuery]);
+
+  const selectMention = React.useCallback(
+    (actor: MentionActor) => {
+      if (!activeMention) return;
+      const handle = actor.handle.replace(/^@/u, "");
+      const insertion = `@${handle}`;
+      const text =
+        source.slice(0, activeMention.start) + insertion + source.slice(activeMention.end);
+      const mentions = [
+        ...(post.source?.mentions ?? []).filter(
+          (mention) => mention.handle.toLowerCase() !== handle.toLowerCase()
+        ),
+        { handle, did: actor.did },
+      ];
+      const caret = activeMention.start + insertion.length;
+      pendingSelection.current = { start: caret, end: caret };
+      setActiveMention(null);
+      setMentionResults([]);
+      setMentionLoading(false);
+      updateSource(text, mentions);
+    },
+    [activeMention, post.source?.mentions, source, updateSource]
   );
 
   const applyCommand = React.useCallback(
@@ -247,11 +345,57 @@ export const SocialMarkdownEditor = React.memo(function SocialMarkdownEditor({
             </Button>
           ))}
         </div>
+        <div className="relative">
         <Textarea
           aria-describedby={`post-${index + 1}-bluesky-output-label`}
           aria-label={`Post ${index + 1} Markdown`}
-          onChange={(event) => updateSource(event.target.value)}
+          aria-activedescendant={
+            activeMention && mentionResults[activeMentionIndex]
+              ? `post-${index + 1}-mention-${activeMentionIndex}`
+              : undefined
+          }
+          aria-autocomplete="list"
+          aria-controls={`post-${index + 1}-mention-results`}
+          aria-expanded={Boolean(activeMention)}
+          onInput={(event) => {
+            const text = event.currentTarget.value;
+            const nextMention = activeMentionAt(
+              text,
+              event.currentTarget.selectionStart
+            );
+            setActiveMention(nextMention);
+            setMentionResults([]);
+            setActiveMentionIndex(0);
+            setMentionLoading(Boolean(nextMention));
+            updateSource(text);
+          }}
           onKeyDown={(event) => {
+            if (activeMention) {
+              if (event.key === "ArrowDown" && mentionResults.length) {
+                event.preventDefault();
+                setActiveMentionIndex((current) => (current + 1) % mentionResults.length);
+                return;
+              }
+              if (event.key === "ArrowUp" && mentionResults.length) {
+                event.preventDefault();
+                setActiveMentionIndex(
+                  (current) => (current - 1 + mentionResults.length) % mentionResults.length
+                );
+                return;
+              }
+              if ((event.key === "Enter" || event.key === "Tab") && mentionResults[activeMentionIndex]) {
+                event.preventDefault();
+                selectMention(mentionResults[activeMentionIndex]);
+                return;
+              }
+              if (event.key === "Escape") {
+                event.preventDefault();
+                setActiveMention(null);
+                setMentionResults([]);
+                setMentionLoading(false);
+                return;
+              }
+            }
             const command = shortcutCommand(event);
             if (!command) return;
             event.preventDefault();
@@ -261,6 +405,46 @@ export const SocialMarkdownEditor = React.memo(function SocialMarkdownEditor({
           ref={textareaRef}
           value={source}
         />
+        {activeMention ? (
+          <div
+            className="absolute inset-x-0 top-full z-20 mt-1 overflow-hidden rounded-2xl border border-border bg-popover p-1 shadow-xl"
+            id={`post-${index + 1}-mention-results`}
+            role="listbox"
+          >
+            {mentionLoading ? (
+              <div className="flex items-center gap-2 px-3 py-2 text-sm font-semibold text-muted-foreground">
+                <AtSign className="size-4" /> Resolving mention…
+              </div>
+            ) : mentionResults.length ? (
+              mentionResults.map((actor, resultIndex) => (
+                <button
+                  aria-selected={resultIndex === activeMentionIndex}
+                  className={cn(
+                    "flex w-full items-center justify-between gap-3 rounded-xl px-3 py-2 text-left text-sm",
+                    resultIndex === activeMentionIndex ? "bg-primary/10 text-primary" : "hover:bg-muted"
+                  )}
+                  id={`post-${index + 1}-mention-${resultIndex}`}
+                  key={actor.did}
+                  onMouseDown={(event) => event.preventDefault()}
+                  onClick={() => selectMention(actor)}
+                  role="option"
+                  type="button"
+                >
+                  <span className="min-w-0">
+                    <span className="block truncate font-black">{actor.displayName || actor.handle}</span>
+                    <span className="block truncate text-xs font-semibold text-muted-foreground">@{actor.handle}</span>
+                  </span>
+                  <AtSign className="size-4 shrink-0" />
+                </button>
+              ))
+            ) : (
+              <div className="px-3 py-2 text-sm font-semibold text-muted-foreground">
+                No matching accounts.
+              </div>
+            )}
+          </div>
+        ) : null}
+        </div>
       </div>
 
       <div className="grid min-w-0 gap-1.5">

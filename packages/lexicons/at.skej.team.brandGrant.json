@@ -46,12 +46,18 @@
               "enum": [
                 "create",
                 "approve",
-                "manage"
+                "manage",
+                "viewAnalytics"
               ],
               "maxLength": 8192
             },
             "minLength": 1,
-            "maxLength": 3
+            "maxLength": 4
+          },
+          "status": {
+            "type": "string",
+            "knownValues": ["active", "revoked"],
+            "description": "Missing on legacy records means active."
           },
           "createdAt": {
             "type": "string",

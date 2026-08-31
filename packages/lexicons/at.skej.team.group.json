@@ -40,6 +40,11 @@
             },
             "maxLength": 200
           },
+          "status": {
+            "type": "string",
+            "knownValues": ["active", "archived"],
+            "description": "Missing on legacy records means active."
+          },
           "createdAt": {
             "type": "string",
             "format": "datetime"
