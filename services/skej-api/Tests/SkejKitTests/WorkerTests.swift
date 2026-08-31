@@ -43,7 +43,12 @@ struct WorkerTests {
             ),
             now: "2026-01-01T09:00:00Z"
         )
-        let worker = ScheduleWorker(store: store, pdsClient: pds, logger: Logger(label: "test"))
+        let worker = ScheduleWorker(
+            store: store,
+            pdsClient: pds,
+            logger: Logger(label: "test"),
+            requiresAuthoritativeCalendar: false
+        )
 
         await worker.runTick(now: ISO8601DateFormatter().date(from: "2026-01-01T10:00:01Z")!)
 
@@ -75,7 +80,12 @@ struct WorkerTests {
             ),
             now: "2026-01-01T09:00:00Z"
         )
-        let worker = ScheduleWorker(store: store, pdsClient: pds, logger: Logger(label: "test"))
+        let worker = ScheduleWorker(
+            store: store,
+            pdsClient: pds,
+            logger: Logger(label: "test"),
+            requiresAuthoritativeCalendar: false
+        )
 
         await worker.runTick(now: ISO8601DateFormatter().date(from: "2026-01-01T10:00:01Z")!)
 
@@ -107,7 +117,12 @@ struct WorkerTests {
             ),
             now: "2026-01-01T09:00:00Z"
         )
-        let worker = ScheduleWorker(store: store, pdsClient: pds, logger: Logger(label: "test"))
+        let worker = ScheduleWorker(
+            store: store,
+            pdsClient: pds,
+            logger: Logger(label: "test"),
+            requiresAuthoritativeCalendar: false
+        )
 
         await worker.runTick(now: ISO8601DateFormatter().date(from: "2026-01-01T10:00:01Z")!)
 
@@ -154,7 +169,8 @@ struct WorkerTests {
             store: store,
             pdsClient: pds,
             logger: Logger(label: "test"),
-            linkPreviewHydrator: hydrator
+            linkPreviewHydrator: hydrator,
+            requiresAuthoritativeCalendar: false
         )
 
         await worker.runTick(now: ISO8601DateFormatter().date(from: "2026-01-01T10:00:01Z")!)
@@ -192,7 +208,12 @@ struct WorkerTests {
             ),
             now: "2026-01-01T09:00:00Z"
         )
-        let worker = ScheduleWorker(store: store, pdsClient: pds, logger: Logger(label: "test"))
+        let worker = ScheduleWorker(
+            store: store,
+            pdsClient: pds,
+            logger: Logger(label: "test"),
+            requiresAuthoritativeCalendar: false
+        )
 
         await worker.runTick(now: ISO8601DateFormatter().date(from: "2026-01-01T10:00:01Z")!)
 
@@ -234,7 +255,12 @@ struct WorkerTests {
             ),
             now: "2026-01-01T09:00:00Z"
         )
-        let worker = ScheduleWorker(store: store, pdsClient: pds, logger: Logger(label: "test"))
+        let worker = ScheduleWorker(
+            store: store,
+            pdsClient: pds,
+            logger: Logger(label: "test"),
+            requiresAuthoritativeCalendar: false
+        )
 
         await worker.runTick(now: ISO8601DateFormatter().date(from: "2026-01-01T10:00:01Z")!)
 
@@ -267,7 +293,12 @@ struct WorkerTests {
             ),
             now: "2026-01-01T09:00:00Z"
         )
-        let worker = ScheduleWorker(store: store, pdsClient: pds, logger: Logger(label: "test"))
+        let worker = ScheduleWorker(
+            store: store,
+            pdsClient: pds,
+            logger: Logger(label: "test"),
+            requiresAuthoritativeCalendar: false
+        )
 
         await worker.runTick(now: ISO8601DateFormatter().date(from: "2026-01-01T10:00:01Z")!)
 
@@ -311,7 +342,12 @@ struct WorkerTests {
             ),
             now: "2026-01-01T09:02:00Z"
         )
-        let worker = ScheduleWorker(store: store, pdsClient: pds, logger: Logger(label: "test"))
+        let worker = ScheduleWorker(
+            store: store,
+            pdsClient: pds,
+            logger: Logger(label: "test"),
+            requiresAuthoritativeCalendar: false
+        )
 
         await worker.runTick(now: ISO8601DateFormatter().date(from: "2026-01-01T09:30:00Z")!)
 
@@ -321,6 +357,69 @@ struct WorkerTests {
         #expect(unblockedRecord?.status == .scheduled)
         #expect(unblockedRecord?.dependency?.parentPublishedUri == parent.publishedUri)
         #expect(unblockedRecord?.dependency?.parentPublishedCid == parent.publishedCid)
+    }
+
+    @Test func workerBlocksPublicationWhenAuthoritativeCalendarEventIsMissing() async throws {
+        let store = try SQLiteStore(path: ":memory:")
+        try await store.migrate()
+        let pds = InMemoryPDSClient()
+        let record = makeRecord(scheduledFor: "2026-01-01T10:00:00Z")
+        try await pds.writeSchedule(did: "did:plc:test", rkey: "3lcalmissing", record: record)
+        try await store.upsertScheduleJob(
+            ScheduledJob(
+                did: "did:plc:test",
+                rkey: "3lcalmissing",
+                scheduledAt: record.scheduledAt,
+                status: .scheduled,
+                attempts: 0,
+                publishRkey: record.publishRkey
+            ),
+            now: "2026-01-01T09:00:00Z"
+        )
+        let worker = ScheduleWorker(store: store, pdsClient: pds, logger: Logger(label: "test"))
+
+        await worker.runTick(now: ISO8601DateFormatter().date(from: "2026-01-01T10:00:01Z")!)
+
+        let job = try await store.scheduleJob(did: "did:plc:test", rkey: "3lcalmissing")
+        let blocked = try await pds.getSchedule(did: "did:plc:test", rkey: "3lcalmissing")
+        #expect(job?.status == .blocked)
+        #expect(blocked?.status == .blocked)
+        #expect(blocked?.lastError?.message.contains("calendar event is missing") == true)
+    }
+
+    @Test func workerDefersToRescheduledAuthoritativeCalendarTiming() async throws {
+        let store = try SQLiteStore(path: ":memory:")
+        try await store.migrate()
+        let pds = InMemoryPDSClient()
+        var record = makeRecord(scheduledFor: "2026-01-01T10:00:00Z")
+        try await pds.writeSchedule(did: "did:plc:test", rkey: "3lcalmove", record: record)
+        try await store.upsertScheduleJob(
+            ScheduledJob(
+                did: "did:plc:test",
+                rkey: "3lcalmove",
+                scheduledAt: record.scheduledAt,
+                status: .scheduled,
+                attempts: 0,
+                publishRkey: record.publishRkey
+            ),
+            now: "2026-01-01T09:00:00Z"
+        )
+        record.scheduledAt = "2026-01-01T12:00:00Z"
+        _ = try await CalendarCoordinator(pdsClient: pds).writeEventFirst(
+            did: "did:plc:test",
+            rkey: "3lcalmove",
+            schedule: record
+        )
+        let worker = ScheduleWorker(store: store, pdsClient: pds, logger: Logger(label: "test"))
+
+        await worker.runTick(now: ISO8601DateFormatter().date(from: "2026-01-01T10:00:01Z")!)
+
+        let job = try await store.scheduleJob(did: "did:plc:test", rkey: "3lcalmove")
+        let reconciled = try await pds.getSchedule(did: "did:plc:test", rkey: "3lcalmove")
+        #expect(job?.status == .scheduled)
+        #expect(job?.scheduledAt == "2026-01-01T12:00:00Z")
+        #expect(reconciled?.scheduledAt == "2026-01-01T12:00:00Z")
+        #expect(reconciled?.publishedUri == nil)
     }
 }
 

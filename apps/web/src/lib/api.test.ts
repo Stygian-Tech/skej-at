@@ -6,6 +6,7 @@ import {
   hydrateLinkPreview,
   isReauthRequired,
   logout,
+  putProEntitlement,
   startOAuth,
 } from "@/lib/api";
 
@@ -18,6 +19,42 @@ afterEach(() => {
 describe("api client", () => {
   it("builds an OAuth start URL", () => {
     expect(startOAuth(" sam.skej.at ")).toBe("/oauth/start?handle=sam.skej.at");
+  });
+
+  it("builds purpose-scoped OAuth URLs without an open redirect", () => {
+    expect(startOAuth("invitee.example", {
+      purpose: "invite_accept",
+      inviteToken: "invite-token",
+      returnTo: "/app/account",
+    })).toBe(
+      "/oauth/start?handle=invitee.example&purpose=invite_accept&returnTo=%2Fapp%2Faccount&inviteToken=invite-token"
+    );
+  });
+
+  it("uses the locked entitlement administration NSID", async () => {
+    const fetchMock = mock(async (input: RequestInfo | URL, init?: RequestInit) => {
+      expect(String(input)).toBe("/xrpc/at.skej.admin.entitlement.put");
+      expect(JSON.parse(String(init?.body))).toEqual({
+        scope: "team",
+        subject: "at://did:plc:owner/at.skej.team/team",
+        status: "active",
+      });
+      return new Response(JSON.stringify({
+        scope: "team",
+        subject: "at://did:plc:owner/at.skej.team/team",
+        status: "active",
+        source: "manual",
+        createdAt: "2026-08-30T00:00:00Z",
+        updatedAt: "2026-08-30T00:00:00Z",
+      }), { status: 200, headers: { "Content-Type": "application/json" } });
+    });
+    globalThis.fetch = fetchMock as unknown as typeof fetch;
+
+    await putProEntitlement({
+      scope: "team",
+      subject: "at://did:plc:owner/at.skej.team/team",
+      status: "active",
+    });
   });
 
   it("posts a schedule record", async () => {

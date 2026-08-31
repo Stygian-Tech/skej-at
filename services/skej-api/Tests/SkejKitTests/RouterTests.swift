@@ -8,6 +8,36 @@ import Testing
 
 @Suite
 struct RouterTests {
+    @Test func xrpcSearchesTypedMentionActorsAndValidatesQuery() async throws {
+        let services = try await makeTestServices(mentionSearchClient: StubMentionSearchClient())
+        let app = Application(router: buildRouter(services: services))
+        try await app.test(.router) { client in
+            try await client.execute(
+                uri: "/xrpc/\(SkejXRPCMethod.searchMentions.nsid)?q=alice&limit=4",
+                method: .get,
+                headers: didHeaders("did:plc:test")
+            ) { response in
+                #expect(response.status == .ok)
+                let output = try JSONDecoder().decode(
+                    SearchMentionsResponse.self,
+                    from: Data(buffer: response.body)
+                )
+                #expect(output.actors == [MentionActor(
+                    handle: "alice.test",
+                    did: "did:plc:alice",
+                    displayName: "Alice"
+                )])
+            }
+            try await client.execute(
+                uri: "/xrpc/\(SkejXRPCMethod.searchMentions.nsid)?limit=9",
+                method: .get,
+                headers: didHeaders("did:plc:test")
+            ) { response in
+                #expect(response.status == .badRequest)
+            }
+        }
+    }
+
     @Test func xrpcCreatesAndListsSchedulesWithCanonicalVerbs() async throws {
         let services = try await makeTestServices()
         let app = Application(router: buildRouter(services: services))
@@ -64,6 +94,136 @@ struct RouterTests {
                 #expect(response.status == .ok)
                 let output = try JSONDecoder().decode(ListSchedulesResponse.self, from: Data(buffer: response.body))
                 #expect(output.records.map(\.rkey) == [created.rkey])
+            }
+        }
+    }
+
+    @Test func xrpcCreateAndUpdateRejectInvalidExplicitNativeFacets() async throws {
+        let services = try await makeTestServices()
+        let app = Application(router: buildRouter(services: services))
+
+        var stale = makeRecord()
+        stale.posts = [PostPlan(
+            text: "Read https://example.com",
+            facets: [nativeFacet(
+                byteStart: 5,
+                byteEnd: 8,
+                feature: [
+                    "$type": .string("app.bsky.richtext.facet#link"),
+                    "uri": .string("https://stale.invalid"),
+                ]
+            )]
+        )]
+
+        var overlapping = makeRecord()
+        overlapping.posts = [PostPlan(
+            text: "Open Skej now",
+            facets: [
+                nativeFacet(
+                    byteStart: 0,
+                    byteEnd: 9,
+                    feature: [
+                        "$type": .string("app.bsky.richtext.facet#link"),
+                        "uri": .string("https://skej.at"),
+                    ]
+                ),
+                nativeFacet(
+                    byteStart: 5,
+                    byteEnd: 13,
+                    feature: [
+                        "$type": .string("app.bsky.richtext.facet#link"),
+                        "uri": .string("https://example.com"),
+                    ]
+                ),
+            ]
+        )]
+
+        var splitCodePoint = makeRecord()
+        splitCodePoint.posts = [PostPlan(
+            text: "👋 link",
+            facets: [nativeFacet(
+                byteStart: 1,
+                byteEnd: 4,
+                feature: [
+                    "$type": .string("app.bsky.richtext.facet#link"),
+                    "uri": .string("https://skej.at"),
+                ]
+            )]
+        )]
+
+        var unsafeURL = makeRecord()
+        unsafeURL.posts = [PostPlan(
+            text: "Link",
+            facets: [nativeFacet(
+                byteStart: 0,
+                byteEnd: 4,
+                feature: [
+                    "$type": .string("app.bsky.richtext.facet#link"),
+                    "uri": .string("javascript:alert(1)"),
+                ]
+            )]
+        )]
+
+        var malformedShadowFacet = makeRecord()
+        malformedShadowFacet.shadowRecord = .object([
+            "$type": .string("app.bsky.feed.post"),
+            "text": .string("@sam"),
+            "facets": .array([nativeFacet(
+                byteStart: 0,
+                byteEnd: 4,
+                feature: ["$type": .string("app.bsky.richtext.facet#mention")]
+            )]),
+        ])
+
+        let invalidRecords = [
+            stale,
+            overlapping,
+            splitCodePoint,
+            unsafeURL,
+            malformedShadowFacet,
+        ]
+
+        try await app.test(.router) { client in
+            let created: ScheduledPostSummary = try await postJSON(
+                client: client,
+                uri: "/xrpc/\(SkejXRPCMethod.createSchedule.nsid)",
+                headers: didHeaders("did:plc:test"),
+                body: SkejCreateScheduleInput(record: makeRecord())
+            )
+            var headers = didHeaders("did:plc:test")
+            headers[.contentType] = "application/json"
+
+            for invalidRecord in invalidRecords {
+                try await client.execute(
+                    uri: "/xrpc/\(SkejXRPCMethod.createSchedule.nsid)",
+                    method: .post,
+                    headers: headers,
+                    body: try encodedBody(SkejCreateScheduleInput(record: invalidRecord))
+                ) { response in
+                    #expect(response.status == .badRequest)
+                    let error = try JSONDecoder().decode(
+                        ErrorBody.self,
+                        from: Data(buffer: response.body)
+                    )
+                    #expect(error.error == "invalid_record")
+                }
+
+                try await client.execute(
+                    uri: "/xrpc/\(SkejXRPCMethod.updateSchedule.nsid)",
+                    method: .post,
+                    headers: headers,
+                    body: try encodedBody(SkejUpdateScheduleInput(
+                        rkey: created.rkey,
+                        record: invalidRecord
+                    ))
+                ) { response in
+                    #expect(response.status == .badRequest)
+                    let error = try JSONDecoder().decode(
+                        ErrorBody.self,
+                        from: Data(buffer: response.body)
+                    )
+                    #expect(error.error == "invalid_record")
+                }
             }
         }
     }
@@ -471,6 +631,10 @@ struct RouterTests {
 
     @Test func permissionGrantAllowsDraftAndApprovalFlow() async throws {
         let services = try await makeTestServices()
+        try await services.store.createOAuthSession(
+            OAuthSessionRecord(did: "did:plc:brand", handle: "brand.test", tokenJSON: "{}", dpopKeyJSON: "{}"),
+            now: Timestamp.iso8601()
+        )
         let app = Application(router: buildRouter(services: services))
 
         try await app.test(.router) { client in
@@ -530,6 +694,10 @@ struct RouterTests {
 
     @Test func adminWithoutBrandGrantCannotApproveOrEditProfile() async throws {
         let services = try await makeTestServices()
+        try await services.store.createOAuthSession(
+            OAuthSessionRecord(did: "did:plc:brand", handle: "brand.test", tokenJSON: "{}", dpopKeyJSON: "{}"),
+            now: Timestamp.iso8601()
+        )
         let app = Application(router: buildRouter(services: services))
 
         try await app.test(.router) { client in
@@ -568,7 +736,7 @@ struct RouterTests {
                 headers: didHeaders("did:plc:admin"),
                 body: try encodedBody(CreateScheduleRequest(record: scheduled))
             ) { response in
-                #expect(response.status == .forbidden)
+                #expect(response.status == .notFound)
             }
 
             try await client.execute(
@@ -577,7 +745,7 @@ struct RouterTests {
                 headers: didHeaders("did:plc:admin"),
                 body: try encodedBody(UpdateBrandProfileRequest(displayName: "Brand", description: "Nope", avatar: nil))
             ) { response in
-                #expect(response.status == .forbidden)
+                #expect(response.status == .notFound)
             }
         }
     }
@@ -610,6 +778,32 @@ struct RouterTests {
             #expect(profile.description == "Business account")
         }
     }
+}
+
+private struct StubMentionSearchClient: ActorMentionSearching {
+    func search(query: String, limit: Int) async throws -> SearchMentionsResponse {
+        #expect(query == "alice")
+        #expect(limit == 4)
+        return SearchMentionsResponse(actors: [MentionActor(
+            handle: "alice.test",
+            did: "did:plc:alice",
+            displayName: "Alice"
+        )])
+    }
+}
+
+private func nativeFacet(
+    byteStart: Int,
+    byteEnd: Int,
+    feature: [String: JSONValue]
+) -> JSONValue {
+    .object([
+        "index": .object([
+            "byteStart": .number(Double(byteStart)),
+            "byteEnd": .number(Double(byteEnd)),
+        ]),
+        "features": .array([.object(feature)]),
+    ])
 }
 
 private struct OAuthMetadataResponse: Decodable {

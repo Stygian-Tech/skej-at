@@ -20,8 +20,11 @@ const permissionLexicons = [
 ];
 const xrpcLexicons = [
   "at.skej.actor.getSession",
+  "at.skej.actor.searchMentions",
   "at.skej.auth.logout",
   "at.skej.account.list",
+  "at.skej.account.setDefault",
+  "at.skej.account.disconnect",
   "at.skej.team.list",
   "at.skej.team.get",
   "at.skej.team.create",
@@ -35,6 +38,9 @@ const xrpcLexicons = [
   "at.skej.team.putBrandGrant",
   "at.skej.team.listBrands",
   "at.skej.team.putBrand",
+  "at.skej.team.listInvites",
+  "at.skej.team.createInvite",
+  "at.skej.team.revokeInvite",
   "at.skej.brand.getProfile",
   "at.skej.brand.updateProfile",
   "at.skej.schedule.list",
@@ -47,6 +53,10 @@ const xrpcLexicons = [
   "at.skej.schedule.recordView",
   "at.skej.preview.createLink",
   "at.skej.audit.list",
+  "at.skej.analytics.getEngagement",
+  "at.skej.calendar.list",
+  "at.skej.admin.entitlement.list",
+  "at.skej.admin.entitlement.put",
   "at.skej.dev.seed",
 ] as const;
 
@@ -142,6 +152,7 @@ describe("at.skej.schedule lexicon", () => {
           properties: {
             format: { enum: string[] };
             text: { maxLength: number };
+            mentions: { items: { ref: string }; maxLength: number };
           };
         };
         dependency: {
@@ -167,6 +178,8 @@ describe("at.skej.schedule lexicon", () => {
     expect(schema.defs.postPlan.properties.publishRkey.minLength).toBe(1);
     expect(schema.defs.postSource.required).toEqual(["format", "text"]);
     expect(schema.defs.postSource.properties.format.enum).toEqual(["markdown"]);
+    expect(schema.defs.postSource.properties.mentions.items.ref).toBe("#resolvedMention");
+    expect(schema.defs.postSource.properties.mentions.maxLength).toBe(32);
     expect(schema.defs.dependency.properties.relationship.enum).toEqual([
       "after",
       "reply",
@@ -200,10 +213,11 @@ describe("social Markdown golden corpus", () => {
         text: string;
         graphemeCount?: number;
         valid?: boolean;
+        mentions?: Array<{ handle: string; did: string }>;
         facets: Array<{
           byteStart: number;
           byteEnd: number;
-          type: "link" | "tag";
+          type: "link" | "mention" | "tag";
           value: string;
         }>;
       }>;
@@ -226,7 +240,7 @@ describe("social Markdown golden corpus", () => {
     for (const entry of fixture.cases) {
       for (const facet of entry.facets) {
         expect(facet.byteStart).toBeLessThan(facet.byteEnd);
-        expect(["link", "tag"]).toContain(facet.type);
+        expect(["link", "mention", "tag"]).toContain(facet.type);
       }
     }
   });
@@ -251,7 +265,7 @@ describe("Skej permission lexicons", () => {
     });
   }
 
-  it("brand grants expose the beta capability set", () => {
+  it("brand grants expose the effective capability set", () => {
     const schema = JSON.parse(
       readFileSync(join(import.meta.dir, "..", "at.skej.team.brandGrant.json"), "utf8")
     ) as {
@@ -270,6 +284,7 @@ describe("Skej permission lexicons", () => {
       "create",
       "approve",
       "manage",
+      "viewAnalytics",
     ]);
   });
 });
