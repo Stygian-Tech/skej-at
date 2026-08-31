@@ -91,12 +91,16 @@ public struct AppConfig: Sendable {
             .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
             .filter { $0.starts(with: "did:") })
         let engagementCollectorEnabled = !["0", "false", "no"].contains(
-            (env["SKEJ_ENGAGEMENT_COLLECTOR_ENABLED"] ?? "true").lowercased()
+            (env["SKEJ_ENGAGEMENT_ENABLED"] ?? env["SKEJ_ENGAGEMENT_COLLECTOR_ENABLED"] ?? "true").lowercased()
         )
-        let engagementCollectorInterval = UInt64(env["SKEJ_ENGAGEMENT_COLLECTOR_INTERVAL_SECONDS"] ?? "900") ?? 900
+        let engagementCollectorInterval = UInt64(
+            env["SKEJ_ENGAGEMENT_INTERVAL_SECONDS"] ?? env["SKEJ_ENGAGEMENT_COLLECTOR_INTERVAL_SECONDS"] ?? "900"
+        ) ?? 900
         let engagementRecentInterval = Int(env["SKEJ_ENGAGEMENT_RECENT_INTERVAL_SECONDS"] ?? "900") ?? 900
         let engagementOldInterval = Int(env["SKEJ_ENGAGEMENT_OLD_INTERVAL_SECONDS"] ?? "21600") ?? 21_600
-        let engagementAppViewOrigin = env["SKEJ_ENGAGEMENT_APPVIEW_ORIGIN"] ?? "https://public.api.bsky.app"
+        let engagementAppViewOrigin = env["SKEJ_BSKY_APPVIEW_ORIGIN"]
+            ?? env["SKEJ_ENGAGEMENT_APPVIEW_ORIGIN"]
+            ?? "https://public.api.bsky.app"
         return AppConfig(
             port: port,
             environment: appEnv,
