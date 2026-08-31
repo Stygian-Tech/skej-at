@@ -4,6 +4,124 @@ import Testing
 
 @Suite
 struct PostRecordCanonicalizerTests {
+    @Test func sourceLessNativeLabeledLinkSurvivesCanonicalizationAndShadowRepair() {
+        let labeledLink: JSONValue = .object([
+            "index": .object(["byteStart": .number(5), "byteEnd": .number(9)]),
+            "features": .array([.object([
+                "$type": .string("app.bsky.richtext.facet#link"),
+                "uri": .string("https://skej.at"),
+            ])]),
+        ])
+        let canonical = PostRecordCanonicalizer.canonicalize(PostPlan(
+            text: "Read Skej",
+            facets: [labeledLink]
+        ))
+        #expect(canonical.facets == [labeledLink])
+
+        let shadow = PostRecordCanonicalizer.canonicalizeFeedPost(.object([
+            "$type": .string("app.bsky.feed.post"),
+            "text": .string("Read Skej"),
+            "facets": .array([labeledLink]),
+        ]))
+        guard case let .object(post) = shadow,
+              case let .array(facets)? = post["facets"]
+        else {
+            Issue.record("Expected the labeled-link facet to survive shadow repair")
+            return
+        }
+        #expect(facets == [labeledLink])
+
+        let urlShapedLabel = "https://shown.example"
+        let differentTarget: JSONValue = .object([
+            "index": .object([
+                "byteStart": .number(0),
+                "byteEnd": .number(Double(urlShapedLabel.utf8.count)),
+            ]),
+            "features": .array([.object([
+                "$type": .string("app.bsky.richtext.facet#link"),
+                "uri": .string("https://target.example"),
+            ])]),
+        ])
+        let urlShapedCanonical = PostRecordCanonicalizer.canonicalize(PostPlan(
+            text: urlShapedLabel,
+            facets: [differentTarget]
+        ))
+        #expect(urlShapedCanonical.facets == [differentTarget])
+    }
+
+    @Test func rejectsUnsafeStaleOverlappingSplitAndMalformedNativeFacets() {
+        let unsafe: JSONValue = .object([
+            "index": .object(["byteStart": .number(0), "byteEnd": .number(4)]),
+            "features": .array([.object([
+                "$type": .string("app.bsky.richtext.facet#link"),
+                "uri": .string("javascript:alert(1)"),
+            ])]),
+        ])
+        let split: JSONValue = .object([
+            "index": .object(["byteStart": .number(1), "byteEnd": .number(4)]),
+            "features": .array([.object([
+                "$type": .string("app.bsky.richtext.facet#mention"),
+                "did": .string("did:plc:test"),
+            ])]),
+        ])
+        let fractional: JSONValue = .object([
+            "index": .object(["byteStart": .number(0.5), "byteEnd": .number(4)]),
+            "features": .array([.object([
+                "$type": .string("app.bsky.richtext.facet#link"),
+                "uri": .string("https://skej.at"),
+            ])]),
+        ])
+        let staleTag: JSONValue = .object([
+            "index": .object(["byteStart": .number(5), "byteEnd": .number(10)]),
+            "features": .array([.object([
+                "$type": .string("app.bsky.richtext.facet#tag"),
+                "tag": .string("other"),
+            ])]),
+        ])
+        #expect(PostRecordCanonicalizer.facets(
+            in: "👋 #skej",
+            preserving: [unsafe, split, fractional, staleTag],
+            detectTextFacets: false
+        ) == nil)
+
+        let mention: JSONValue = .object([
+            "index": .object(["byteStart": .number(0), "byteEnd": .number(4)]),
+            "features": .array([.object([
+                "$type": .string("app.bsky.richtext.facet#mention"),
+                "did": .string("did:plc:test"),
+            ])]),
+        ])
+        let overlappingLink: JSONValue = .object([
+            "index": .object(["byteStart": .number(0), "byteEnd": .number(4)]),
+            "features": .array([.object([
+                "$type": .string("app.bsky.richtext.facet#link"),
+                "uri": .string("https://skej.at"),
+            ])]),
+        ])
+        #expect(PostRecordCanonicalizer.facets(
+            in: "@sam",
+            preserving: [mention, overlappingLink],
+            detectTextFacets: false
+        )?.count == 1)
+    }
+
+    @Test func markdownProjectionTrimsAndRebasesResolvedMentionsAndLinks() {
+        let canonical = PostRecordCanonicalizer.canonicalize(PostPlan(
+            text: "stale",
+            source: PostSource(
+                format: .markdown,
+                text: "  👋 @alice.test [Skej](https://skej.at)  ",
+                mentions: [ResolvedMention(handle: "alice.test", did: "did:plc:alice")]
+            )
+        ))
+        #expect(canonical.text == "👋 @alice.test Skej")
+        #expect(canonical.facets?.count == 2)
+        #expect(mentionDID(canonical.facets?[0]) == "did:plc:alice")
+        #expect(byteRange(canonical.facets?[0]) == 5..<16)
+        #expect(linkURI(canonical.facets?[1]) == "https://skej.at")
+        #expect(byteRange(canonical.facets?[1]) == 17..<21)
+    }
+
     @Test func markdownSourceAuthoritativelyRebuildsProjectionAndLabeledLinkFacet() {
         let staleLink: JSONValue = .object([
             "index": .object(["byteStart": .number(0), "byteEnd": .number(4)]),
@@ -54,7 +172,7 @@ struct PostRecordCanonicalizerTests {
         #expect(byteRange(facets?[1]) == 32..<48)
     }
 
-    @Test func preservesValidNonLinkFacetsAndReplacesLinkFacets() throws {
+    @Test func explicitFacetArraysDoNotRepairInvalidLinksWithAutoDetection() throws {
         let mention: JSONValue = .object([
             "index": .object([
                 "byteStart": .number(0),
@@ -85,12 +203,11 @@ struct PostRecordCanonicalizerTests {
             preserving: [staleLink, mention]
         )
 
-        #expect(facets?.count == 2)
+        #expect(facets?.count == 1)
         #expect(mentionDID(facets?[0]) == "did:plc:test")
-        #expect(linkURI(facets?[1]) == "https://example.com")
     }
 
-    @Test func dropsPreservedFacetsThatOverlapDetectedLinks() {
+    @Test func invalidExplicitFacetsAreNotReplacedByDetectedLinks() {
         let overlap: JSONValue = .object([
             "index": .object([
                 "byteStart": .number(8),
@@ -109,8 +226,7 @@ struct PostRecordCanonicalizerTests {
             preserving: [overlap]
         )
 
-        #expect(facets?.count == 1)
-        #expect(linkURI(facets?[0]) == "https://example.com")
+        #expect(facets == nil)
     }
 
     @Test func dropsStaleMentionFacetsThatNoLongerCoverAMention() {
@@ -152,7 +268,7 @@ struct PostRecordCanonicalizerTests {
         #expect(tagValue(facets?[2]) == "done")
     }
 
-    @Test func skipsOverlongTagsAndReplacesStaleTagFacets() {
+    @Test func explicitStaleTagFacetsDoNotTriggerAutomaticTagReplacement() {
         let stale: JSONValue = .object([
             "index": .object([
                 "byteStart": .number(40),
@@ -172,8 +288,7 @@ struct PostRecordCanonicalizerTests {
             preserving: [stale]
         )
 
-        #expect(facets?.count == 1)
-        #expect(tagValue(facets?[0]) == "ok")
+        #expect(facets == nil)
     }
 
     @Test func ignoresMalformedURLsAndKeepsBalancedParentheses() {

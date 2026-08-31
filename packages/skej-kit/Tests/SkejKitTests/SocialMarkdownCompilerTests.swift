@@ -12,6 +12,7 @@ private struct SocialMarkdownFixture: Decodable {
         let text: String
         let graphemeCount: Int?
         let valid: Bool?
+        let mentions: [ResolvedMention]?
         let facets: [Facet]
     }
 
@@ -28,7 +29,10 @@ private struct SocialMarkdownFixture: Decodable {
     #expect(fixture.profile == "skej.social-markdown.v1")
 
     for testCase in fixture.cases {
-        let compilation = SocialMarkdownCompiler.compile(testCase.source)
+        let compilation = SocialMarkdownCompiler.compile(
+            testCase.source,
+            resolvedMentions: testCase.mentions ?? []
+        )
         #expect(compilation.text == testCase.text, Comment(rawValue: testCase.name))
         #expect(
             compilation.facets.compactMap(goldenFacet) == testCase.facets,
@@ -135,6 +139,15 @@ private func goldenFacet(_ value: JSONValue) -> SocialMarkdownFixture.Facet? {
             byteEnd: Int(byteEnd),
             type: "tag",
             value: tag
+        )
+    }
+    if type == "app.bsky.richtext.facet#mention",
+       case let .string(did)? = feature["did"] {
+        return .init(
+            byteStart: Int(byteStart),
+            byteEnd: Int(byteEnd),
+            type: "mention",
+            value: did
         )
     }
     return nil
