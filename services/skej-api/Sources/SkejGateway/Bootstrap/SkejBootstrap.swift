@@ -11,14 +11,25 @@ public enum SkejBootstrap {
             configuration: .init(address: .hostname("0.0.0.0", port: config.port))
         )
         let worker = ScheduleWorker(store: services.store, pdsClient: services.pdsClient, logger: logger)
+        let engagementCollector = EngagementCollectorRuntime(services: services, logger: logger)
         logger.info("skej-api listening on port \(config.port)")
 
-        if config.workerEnabled {
+        if config.workerEnabled || config.engagementCollectorEnabled {
             try await withThrowingTaskGroup(of: Void.self) { group in
-                group.addTask {
-                    while !Task.isCancelled {
-                        await worker.runTick()
-                        try await Task.sleep(nanoseconds: config.workerIntervalSeconds * 1_000_000_000)
+                if config.workerEnabled {
+                    group.addTask {
+                        while !Task.isCancelled {
+                            await worker.runTick()
+                            try await Task.sleep(for: .seconds(config.workerIntervalSeconds))
+                        }
+                    }
+                }
+                if config.engagementCollectorEnabled {
+                    group.addTask {
+                        while !Task.isCancelled {
+                            await engagementCollector.runTick()
+                            try await Task.sleep(for: .seconds(config.engagementCollectorIntervalSeconds))
+                        }
                     }
                 }
                 group.addTask { try await app.runService() }

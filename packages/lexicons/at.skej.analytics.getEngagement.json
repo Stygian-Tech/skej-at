@@ -1,0 +1,118 @@
+{
+  "lexicon": 1,
+  "id": "at.skej.analytics.getEngagement",
+  "defs": {
+    "main": {
+      "type": "query",
+      "parameters": {
+        "type": "params",
+        "required": ["from", "to", "bucket", "timezone"],
+        "properties": {
+          "from": { "type": "string", "format": "datetime" },
+          "to": { "type": "string", "format": "datetime" },
+          "bucket": {
+            "type": "string",
+            "knownValues": ["day", "week"]
+          },
+          "timezone": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "accountDids": {
+            "type": "array",
+            "maxLength": 100,
+            "items": { "type": "string", "format": "did" }
+          }
+        }
+      },
+      "output": {
+        "encoding": "application/json",
+        "schema": { "type": "ref", "ref": "#engagementOutput" }
+      },
+      "errors": [
+        { "name": "AuthRequired" },
+        { "name": "InvalidRequest" },
+        { "name": "Forbidden" },
+        { "name": "NotFound" }
+      ],
+      "description": "Returns bucketed engagement for the authorized accounts visible to the current Skej viewer."
+    },
+    "engagementOutput": {
+      "type": "object",
+      "required": ["generatedAt", "status", "accounts"],
+      "properties": {
+        "generatedAt": { "type": "string", "format": "datetime" },
+        "coverageStartedAt": { "type": "string", "format": "datetime" },
+        "lastCollectedAt": { "type": "string", "format": "datetime" },
+        "status": {
+          "type": "string",
+          "knownValues": ["live", "stale", "partial"]
+        },
+        "accounts": {
+          "type": "array",
+          "maxLength": 100,
+          "items": { "type": "ref", "ref": "#accountSeries" }
+        }
+      }
+    },
+    "accountSeries": {
+      "type": "object",
+      "required": [
+        "account",
+        "trackedPostCount",
+        "unavailablePostCount",
+        "lifetime",
+        "period",
+        "points"
+      ],
+      "properties": {
+        "account": { "type": "ref", "ref": "#accountIdentity" },
+        "trackedPostCount": { "type": "integer", "minimum": 0 },
+        "unavailablePostCount": { "type": "integer", "minimum": 0 },
+        "lifetime": { "type": "ref", "ref": "#totals" },
+        "period": { "type": "ref", "ref": "#totals" },
+        "points": {
+          "type": "array",
+          "maxLength": 40000,
+          "items": { "type": "ref", "ref": "#point" }
+        }
+      }
+    },
+    "accountIdentity": {
+      "type": "object",
+      "required": ["did"],
+      "properties": {
+        "did": { "type": "string", "format": "did" },
+        "handle": { "type": "string", "format": "handle" },
+        "displayName": { "type": "string", "maxGraphemes": 64, "maxLength": 640 },
+        "avatar": { "type": "string", "format": "uri" }
+      }
+    },
+    "totals": {
+      "type": "object",
+      "required": ["likes", "reposts", "replies", "quotes", "bookmarks", "total"],
+      "properties": {
+        "likes": { "type": "integer" },
+        "reposts": { "type": "integer" },
+        "replies": { "type": "integer" },
+        "quotes": { "type": "integer" },
+        "bookmarks": { "type": "integer" },
+        "total": { "type": "integer" }
+      }
+    },
+    "point": {
+      "type": "object",
+      "required": ["bucketStart", "likes", "reposts", "replies", "quotes", "bookmarks", "total"],
+      "properties": {
+        "bucketStart": { "type": "string", "format": "datetime" },
+        "likes": { "type": "integer" },
+        "reposts": { "type": "integer" },
+        "replies": { "type": "integer" },
+        "quotes": { "type": "integer" },
+        "bookmarks": { "type": "integer" },
+        "total": { "type": "integer" }
+      }
+    }
+  }
+}

@@ -1,0 +1,56 @@
+{
+  "lexicon": 1,
+  "id": "at.skej.actor.searchMentions",
+  "defs": {
+    "main": {
+      "type": "query",
+      "parameters": {
+        "type": "params",
+        "required": ["q"],
+        "properties": {
+          "q": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64,
+            "description": "Handle or display-name prefix without the leading at-sign."
+          },
+          "limit": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 8,
+            "default": 8
+          }
+        }
+      },
+      "output": {
+        "encoding": "application/json",
+        "schema": {
+          "type": "object",
+          "required": ["actors"],
+          "properties": {
+            "actors": {
+              "type": "array",
+              "maxLength": 8,
+              "items": { "type": "ref", "ref": "#actor" }
+            }
+          }
+        }
+      },
+      "errors": [
+        { "name": "AuthRequired" },
+        { "name": "InvalidRequest" }
+      ],
+      "description": "Authenticated proxy for resolving mention handles to canonical DIDs."
+    },
+    "actor": {
+      "type": "object",
+      "required": ["handle", "did"],
+      "properties": {
+        "handle": { "type": "string", "format": "handle" },
+        "did": { "type": "string", "format": "did" },
+        "displayName": { "type": "string", "maxGraphemes": 64, "maxLength": 640 },
+        "avatar": { "type": "string", "format": "uri" }
+      }
+    }
+  }
+}

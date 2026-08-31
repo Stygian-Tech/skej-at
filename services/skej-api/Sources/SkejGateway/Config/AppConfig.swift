@@ -17,6 +17,12 @@ public struct AppConfig: Sendable {
     public let workerIntervalSeconds: UInt64
     public let liveATProtoEnabled: Bool
     public let proFeaturesEnabled: Bool
+    public let adminDids: Set<String>
+    public let engagementCollectorEnabled: Bool
+    public let engagementCollectorIntervalSeconds: UInt64
+    public let engagementRecentIntervalSeconds: Int
+    public let engagementOldIntervalSeconds: Int
+    public let engagementAppViewOrigin: String
 
     public init(
         port: Int,
@@ -27,7 +33,13 @@ public struct AppConfig: Sendable {
         workerEnabled: Bool = true,
         workerIntervalSeconds: UInt64 = 30,
         liveATProtoEnabled: Bool = false,
-        proFeaturesEnabled: Bool = true
+        proFeaturesEnabled: Bool = true,
+        adminDids: Set<String> = [],
+        engagementCollectorEnabled: Bool = true,
+        engagementCollectorIntervalSeconds: UInt64 = 15 * 60,
+        engagementRecentIntervalSeconds: Int = 15 * 60,
+        engagementOldIntervalSeconds: Int = 6 * 60 * 60,
+        engagementAppViewOrigin: String = "https://public.api.bsky.app"
     ) {
         self.port = port
         self.environment = environment
@@ -38,6 +50,12 @@ public struct AppConfig: Sendable {
         self.workerIntervalSeconds = workerIntervalSeconds
         self.liveATProtoEnabled = liveATProtoEnabled
         self.proFeaturesEnabled = proFeaturesEnabled
+        self.adminDids = adminDids
+        self.engagementCollectorEnabled = engagementCollectorEnabled
+        self.engagementCollectorIntervalSeconds = max(60, engagementCollectorIntervalSeconds)
+        self.engagementRecentIntervalSeconds = max(60, engagementRecentIntervalSeconds)
+        self.engagementOldIntervalSeconds = max(self.engagementRecentIntervalSeconds, engagementOldIntervalSeconds)
+        self.engagementAppViewOrigin = engagementAppViewOrigin.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
     }
 
     public static func load() -> AppConfig {
@@ -68,6 +86,17 @@ public struct AppConfig: Sendable {
         let proFeaturesEnabled = !["0", "false", "no"].contains(
             (env["SKEJ_PRO_ENABLED"] ?? (proDefault ? "true" : "false")).lowercased()
         )
+        let adminDids = Set((env["SKEJ_ADMIN_DIDS"] ?? "")
+            .split(separator: ",")
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { $0.starts(with: "did:") })
+        let engagementCollectorEnabled = !["0", "false", "no"].contains(
+            (env["SKEJ_ENGAGEMENT_COLLECTOR_ENABLED"] ?? "true").lowercased()
+        )
+        let engagementCollectorInterval = UInt64(env["SKEJ_ENGAGEMENT_COLLECTOR_INTERVAL_SECONDS"] ?? "900") ?? 900
+        let engagementRecentInterval = Int(env["SKEJ_ENGAGEMENT_RECENT_INTERVAL_SECONDS"] ?? "900") ?? 900
+        let engagementOldInterval = Int(env["SKEJ_ENGAGEMENT_OLD_INTERVAL_SECONDS"] ?? "21600") ?? 21_600
+        let engagementAppViewOrigin = env["SKEJ_ENGAGEMENT_APPVIEW_ORIGIN"] ?? "https://public.api.bsky.app"
         return AppConfig(
             port: port,
             environment: appEnv,
@@ -77,7 +106,13 @@ public struct AppConfig: Sendable {
             workerEnabled: workerEnabled,
             workerIntervalSeconds: interval,
             liveATProtoEnabled: liveATProtoEnabled,
-            proFeaturesEnabled: proFeaturesEnabled
+            proFeaturesEnabled: proFeaturesEnabled,
+            adminDids: adminDids,
+            engagementCollectorEnabled: engagementCollectorEnabled,
+            engagementCollectorIntervalSeconds: engagementCollectorInterval,
+            engagementRecentIntervalSeconds: engagementRecentInterval,
+            engagementOldIntervalSeconds: engagementOldInterval,
+            engagementAppViewOrigin: engagementAppViewOrigin
         )
     }
 

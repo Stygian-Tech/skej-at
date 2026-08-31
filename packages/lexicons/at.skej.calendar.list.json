@@ -1,0 +1,46 @@
+{
+  "lexicon": 1,
+  "id": "at.skej.calendar.list",
+  "defs": {
+    "main": {
+      "type": "query",
+      "description": "Lists authoritative calendar events across accounts accessible to the viewer.",
+      "parameters": {
+        "type": "params",
+        "properties": {
+          "from": { "type": "string", "format": "datetime" },
+          "to": { "type": "string", "format": "datetime" },
+          "status": {
+            "type": "array",
+            "items": { "type": "string" },
+            "maxLength": 5
+          },
+          "accountDids": {
+            "type": "array",
+            "items": { "type": "string", "format": "did" },
+            "maxLength": 100
+          }
+        }
+      },
+      "output": {
+        "encoding": "application/json",
+        "schema": {
+          "type": "object",
+          "required": ["events"],
+          "properties": {
+            "events": {
+              "type": "array",
+              "maxLength": 5000,
+              "items": { "type": "ref", "ref": "at.skej.defs#calendarEvent" }
+            }
+          }
+        }
+      },
+      "errors": [
+        { "name": "AuthRequired" },
+        { "name": "InvalidRequest" },
+        { "name": "Forbidden" }
+      ]
+    }
+  }
+}

@@ -43,6 +43,18 @@ export interface ScheduleDependency {
 
 export type ComposerMode = "post" | "reply" | "quote";
 
+export interface MentionActor {
+  handle: string;
+  did: string;
+  displayName?: string;
+  avatar?: string;
+}
+
+export interface ResolvedMention {
+  handle: string;
+  did: string;
+}
+
 export interface RichFacet {
   index: {
     byteStart: number;
@@ -117,6 +129,7 @@ export interface ReplyDraft {
 export interface PostSource {
   format: "markdown";
   text: string;
+  mentions?: ResolvedMention[];
 }
 
 export interface PostPlan {
@@ -165,6 +178,8 @@ export interface SkejScheduleRecord {
   recordType: string;
   shadowRecord?: unknown;
   publishRkey: string;
+  calendarEventUri?: string;
+  calendarEventCid?: string;
   publishedUri?: string;
   publishedCid?: string;
   publishedPosts?: PublishedPostReference[];
@@ -193,22 +208,17 @@ export interface ScheduledPostSummary {
 export interface CommunityCalendarEventRecord {
   $type: "community.lexicon.calendar.event";
   name: string;
-  description?: string;
-  startsAt: string;
+  uris?: Array<{ uri: string; name?: string }>;
+  startsAt?: string;
   endsAt?: string;
-  timezone?: string;
-  status: ScheduleStatus;
-  source: {
-    $type: typeof SKEJ_SCHEDULE_COLLECTION;
-    uri: string;
-    did: string;
-    rkey: string;
-  };
-  content?: {
-    recordType: string;
-    publishRkey: string;
-    publishedUri?: string;
-  };
+  status?:
+    | "community.lexicon.calendar.event#planned"
+    | "community.lexicon.calendar.event#scheduled"
+    | "community.lexicon.calendar.event#rescheduled"
+    | "community.lexicon.calendar.event#postponed"
+    | "community.lexicon.calendar.event#cancelled";
+  mode?: string;
+  createdAt: string;
 }
 
 export interface ManagedAccount {
@@ -224,8 +234,10 @@ export interface ManagedAccount {
 export type TeamStatus = "active" | "archived";
 export type TeamRole = "admin" | "user";
 export type MembershipStatus = "active" | "disabled";
-export type BrandCapability = "create" | "approve" | "manage";
+export type BrandCapability = "create" | "approve" | "manage" | "viewAnalytics";
 export type GrantGranteeType = "member" | "group";
+export type TeamGroupStatus = "active" | "archived";
+export type BrandGrantStatus = "active" | "revoked";
 
 export interface SkejTeamRecord {
   $type: "at.skej.team";
@@ -253,6 +265,7 @@ export interface TeamGroupRecord {
   name: string;
   memberDids?: string[];
   brandGrantUris?: string[];
+  status: TeamGroupStatus;
   createdAt: string;
   updatedAt: string;
 }
@@ -264,6 +277,7 @@ export interface BrandGrantRecord {
   granteeType: GrantGranteeType;
   grantee: string;
   capabilities: BrandCapability[];
+  status: BrandGrantStatus;
   createdAt: string;
   updatedAt: string;
 }
@@ -282,6 +296,34 @@ export interface TeamSummary {
   rkey: string;
   uri: string;
   record: SkejTeamRecord;
+}
+
+export interface TeamInvite {
+  id: string;
+  token: string;
+  teamUri: string;
+  teamTitle: string;
+  ownerDid: string;
+  invitedHandle?: string;
+  invitedDid?: string;
+  role: TeamRole;
+  status: "pending" | "accepted" | "revoked" | "expired";
+  inviterDid: string;
+  acceptedDid?: string;
+  createdAt: string;
+  expiresAt: string;
+  updatedAt: string;
+}
+
+export interface ProEntitlement {
+  scope: "actor" | "team";
+  subject: string;
+  status: "active" | "revoked";
+  source: string;
+  grantedByDid?: string;
+  expiresAt?: string;
+  createdAt: string;
+  updatedAt: string;
 }
 
 export interface TeamMemberSummary {

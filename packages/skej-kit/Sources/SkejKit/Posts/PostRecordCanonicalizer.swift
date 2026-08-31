@@ -1,5 +1,9 @@
 import Foundation
 
+public enum PostRecordValidationError: Error, Equatable, Sendable {
+    case invalidFacet
+}
+
 public enum PostRecordCanonicalizer {
     private static let urlExpression = try! NSRegularExpression(
         pattern: #"https?://[^\s<>"']+"#,
@@ -20,7 +24,7 @@ public enum PostRecordCanonicalizer {
     ]
 
     public static func canonicalize(_ plan: PostPlan) -> PostPlan {
-        let compiled = plan.source.map { SocialMarkdownCompiler.compile($0.text) }
+        let compiled = plan.source.map(SocialMarkdownCompiler.project)
         let text = compiled?.text ?? plan.text
         return PostPlan(
             text: text,
@@ -28,9 +32,9 @@ public enum PostRecordCanonicalizer {
             publishRkey: plan.publishRkey,
             facets: facets(
                 in: text,
-                preserving: plan.facets,
+                preserving: compiled == nil ? plan.facets : nil,
                 including: compiled?.facets ?? [],
-                detectTextFacets: compiled == nil
+                detectTextFacets: compiled == nil && plan.facets == nil
             ),
             reply: plan.reply,
             embed: normalizeEmbed(plan.embed),
@@ -48,13 +52,18 @@ public enum PostRecordCanonicalizer {
             return value
         }
 
+        let hasExplicitFacets = post["facets"] != nil
         let existingFacets: [JSONValue]?
         if case let .array(facets)? = post["facets"] {
             existingFacets = facets
         } else {
             existingFacets = nil
         }
-        if let facets = facets(in: text, preserving: existingFacets) {
+        if let facets = facets(
+            in: text,
+            preserving: existingFacets,
+            detectTextFacets: !hasExplicitFacets
+        ) {
             post["facets"] = .array(facets)
         } else {
             post.removeValue(forKey: "facets")
@@ -63,6 +72,23 @@ public enum PostRecordCanonicalizer {
             post["embed"] = embed
         }
         return .object(post)
+    }
+
+    public static func validateExplicitFacets(in plan: PostPlan) throws {
+        guard let facets = plan.facets else { return }
+        try validate(facets: facets, in: plan.text)
+    }
+
+    public static func validateExplicitFacets(inFeedPost value: JSONValue) throws {
+        guard case let .object(post) = value,
+              let explicitFacets = post["facets"]
+        else { return }
+        guard case let .string(text)? = post["text"],
+              case let .array(facets) = explicitFacets
+        else {
+            throw PostRecordValidationError.invalidFacet
+        }
+        try validate(facets: facets, in: text)
     }
 
     public static func feedPostValue(
@@ -105,12 +131,7 @@ public enum PostRecordCanonicalizer {
         including authoredFacets: [JSONValue] = [],
         detectTextFacets: Bool = true
     ) -> [JSONValue]? {
-        let links = detectTextFacets ? detectedLinks(in: text) : []
-        let linkRanges = links.map(\.range)
-        let tags = (detectTextFacets ? detectedTags(in: text) : []).filter { tag in
-            !linkRanges.contains { $0.overlaps(tag.range) }
-        }
-        let detectedRanges = linkRanges + tags.map(\.range)
+        let shouldDetectTextFacets = detectTextFacets && existingFacets == nil
         var preservedRanges: [Range<Int>] = []
         var facets: [JSONValue] = []
         for facet in authoredFacets.sorted(by: {
@@ -119,8 +140,7 @@ public enum PostRecordCanonicalizer {
         }) {
             guard let range = facetByteRange(facet),
                   isValidFacetRange(range, in: text),
-                  facetIsSafeAuthoredGeneratedFacet(facet),
-                  !detectedRanges.contains(where: { $0.overlaps(range) }),
+                  facetIsValidNativeFacet(facet, range: range, in: text),
                   !preservedRanges.contains(where: { $0.overlaps(range) })
             else { continue }
             facets.append(facet)
@@ -132,8 +152,7 @@ public enum PostRecordCanonicalizer {
         }) {
             guard let range = facetByteRange(facet),
                   isValidFacetRange(range, in: text),
-                  facetIsValidMention(facet, range: range, in: text),
-                  !detectedRanges.contains(where: { $0.overlaps(range) }),
+                  facetIsValidNativeFacet(facet, range: range, in: text),
                   !preservedRanges.contains(where: { $0.overlaps(range) })
             else {
                 continue
@@ -142,6 +161,9 @@ public enum PostRecordCanonicalizer {
             preservedRanges.append(range)
         }
 
+        let links = (shouldDetectTextFacets ? detectedLinks(in: text) : []).filter { link in
+            !preservedRanges.contains(where: { $0.overlaps(link.range) })
+        }
         facets.append(contentsOf: links.map { link in
             facet(
                 range: link.range,
@@ -151,6 +173,10 @@ public enum PostRecordCanonicalizer {
                 ]
             )
         })
+        let occupiedRanges = preservedRanges + links.map(\.range)
+        let tags = (shouldDetectTextFacets ? detectedTags(in: text) : []).filter { tag in
+            !occupiedRanges.contains(where: { $0.overlaps(tag.range) })
+        }
         facets.append(contentsOf: tags.map { tag in
             facet(
                 range: tag.range,
@@ -224,7 +250,7 @@ public enum PostRecordCanonicalizer {
             // The capture keeps the leading "#", which the facet range covers but the
             // tag value omits.
             let body = trimTrailingTagPunctuation(text[matchRange].dropFirst())
-            guard !body.isEmpty, body.utf16.count <= maxTagLength else {
+            guard !body.isEmpty, body.count <= maxTagLength else {
                 return nil
             }
             let byteStart = text[..<matchRange.lowerBound].utf8.count
@@ -307,7 +333,11 @@ public enum PostRecordCanonicalizer {
         }
     }
 
-    private static func facetIsSafeAuthoredGeneratedFacet(_ facet: JSONValue) -> Bool {
+    private static func facetIsValidNativeFacet(
+        _ facet: JSONValue,
+        range: Range<Int>,
+        in text: String
+    ) -> Bool {
         guard case let .object(object) = facet,
               case let .array(features)? = object["features"],
               features.count == 1,
@@ -316,13 +346,49 @@ public enum PostRecordCanonicalizer {
         else { return false }
         if type == "app.bsky.richtext.facet#link",
            case let .string(uri)? = feature["uri"] {
-            return isSafeHTTPURL(uri)
+            guard isSafeHTTPURL(uri),
+                  !facetText(range, in: text).trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            else { return false }
+            let overlappingDetectedLinks = detectedLinks(in: text).filter { $0.range.overlaps(range) }
+            return overlappingDetectedLinks.allSatisfy { detected in
+                detected.range == range
+            }
+        }
+        if type == "app.bsky.richtext.facet#mention" {
+            return facetIsValidMention(facet, range: range, in: text)
         }
         if type == "app.bsky.richtext.facet#tag",
            case let .string(tag)? = feature["tag"] {
-            return !tag.isEmpty && tag.count <= maxTagLength
+            let displayed = facetText(range, in: text)
+            return !tag.isEmpty && tag.count <= maxTagLength &&
+                (displayed == "#\(tag)" || displayed == "＃\(tag)") &&
+                detectedTags(in: text).contains { $0.range == range && $0.tag == tag }
         }
         return false
+    }
+
+    private static func validate(facets: [JSONValue], in text: String) throws {
+        var ranges: [Range<Int>] = []
+        for facet in facets {
+            guard let range = facetByteRange(facet),
+                  isValidFacetRange(range, in: text),
+                  facetIsValidNativeFacet(facet, range: range, in: text),
+                  !ranges.contains(where: { $0.overlaps(range) })
+            else {
+                throw PostRecordValidationError.invalidFacet
+            }
+            ranges.append(range)
+        }
+    }
+
+    private static func facetText(_ range: Range<Int>, in text: String) -> String {
+        let utf8 = text.utf8
+        let start = utf8.index(utf8.startIndex, offsetBy: range.lowerBound)
+        let end = utf8.index(utf8.startIndex, offsetBy: range.upperBound)
+        guard let textStart = start.samePosition(in: text),
+              let textEnd = end.samePosition(in: text)
+        else { return "" }
+        return String(text[textStart..<textEnd])
     }
 
     private static func isSafeHTTPURL(_ value: String) -> Bool {
@@ -352,6 +418,10 @@ public enum PostRecordCanonicalizer {
         else {
             return nil
         }
+        guard start.isFinite, end.isFinite,
+              start.rounded(.towardZero) == start,
+              end.rounded(.towardZero) == end
+        else { return nil }
         return Int(start)..<Int(end)
     }
 }

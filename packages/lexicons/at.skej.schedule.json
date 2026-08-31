@@ -112,6 +112,16 @@
             "type": "string",
             "maxLength": 8192
           },
+          "calendarEventUri": {
+            "type": "string",
+            "format": "at-uri",
+            "description": "Authoritative community calendar event for this schedule."
+          },
+          "calendarEventCid": {
+            "type": "string",
+            "format": "cid",
+            "description": "CID of the latest authoritative calendar event projection."
+          },
           "publishedPosts": {
             "type": "array",
             "maxLength": 25,
@@ -285,6 +295,32 @@
           "type": "string",
           "maxLength": 30000,
           "maxGraphemes": 3000
+        },
+        "mentions": {
+          "type": "array",
+          "maxLength": 32,
+          "items": {
+            "type": "ref",
+            "ref": "#resolvedMention"
+          },
+          "description": "Resolved mention handles and immutable DIDs used to build native mention facets."
+        }
+      }
+    },
+    "resolvedMention": {
+      "type": "object",
+      "required": [
+        "handle",
+        "did"
+      ],
+      "properties": {
+        "handle": {
+          "type": "string",
+          "format": "handle"
+        },
+        "did": {
+          "type": "string",
+          "format": "did"
         }
       }
     },
