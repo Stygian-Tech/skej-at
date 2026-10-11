@@ -219,17 +219,19 @@ public actor SQLiteStore {
     /// then atomically encrypt legacy secrets and scrub freed database/WAL pages.
     private func migrateAuthVault() throws {
         try exec("CREATE TABLE IF NOT EXISTS auth_vault_cleanup (id INTEGER PRIMARY KEY CHECK(id = 1), pending INTEGER NOT NULL)")
-        let sessions = try query("SELECT did, token_json, dpop_key_json FROM oauth_sessions", [])
-        let states = try query("SELECT state, pkce_verifier, dpop_key_json FROM oauth_states", [])
-        for row in sessions + states {
-            for field in ["token_json", "dpop_key_json", "pkce_verifier"] {
-                if let value = row[field], value.hasPrefix("aesgcm:v1:") { _ = try decryptAuthMaterial(value) }
-            }
-        }
-        guard authKey != nil else { return }
         var changed = false
         try exec("BEGIN IMMEDIATE")
         do {
+            // Hold the write lease through reading/validation so another process
+            // cannot refresh a grant between the snapshot and its encrypted write.
+            let sessions = try query("SELECT did, token_json, dpop_key_json FROM oauth_sessions", [])
+            let states = try query("SELECT state, pkce_verifier, dpop_key_json FROM oauth_states", [])
+            for row in sessions + states {
+                for field in ["token_json", "dpop_key_json", "pkce_verifier"] {
+                    if let value = row[field], value.hasPrefix("aesgcm:v1:") { _ = try decryptAuthMaterial(value) }
+                }
+            }
+            guard authKey != nil else { try exec("COMMIT"); return }
             for row in sessions {
                 guard let did = row["did"], let token = row["token_json"], let key = row["dpop_key_json"] else { continue }
                 if !token.hasPrefix("aesgcm:v1:") || !key.hasPrefix("aesgcm:v1:") {
