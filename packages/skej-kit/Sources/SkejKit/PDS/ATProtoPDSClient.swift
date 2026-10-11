@@ -93,6 +93,26 @@ public struct ATProtoPDSClient: PDSClient {
         try await writeRecord(did: did, collection: "at.skej.schedule", rkey: rkey, record: record)
     }
 
+    /// Authenticated probe; unlike display reads, connection readiness never uses a cache fallback.
+    public func verifySchedulingConnection(did: String) async throws {
+        do {
+            let session = try await authenticatedSession(did: did)
+            let url = "\(session.token.pdsEndpoint)/xrpc/com.atproto.repo.listRecords?repo=\(urlEncode(did))&collection=at.skej.schedule&limit=1"
+            _ = try await xrpcData(session: session, method: "GET", url: url, body: nil)
+        } catch {
+            await flagReauthIfNeeded(did: did, error: error)
+            throw error
+        }
+    }
+
+    /// A stale cached record must never authorize overwriting a finished PDS schedule.
+    public func getScheduleForMutation(did: String, rkey: String) async throws -> SkejScheduleRecord? {
+        let session = try await authenticatedSession(did: did)
+        let url = "\(session.token.pdsEndpoint)/xrpc/com.atproto.repo.getRecord?repo=\(urlEncode(did))&collection=at.skej.schedule&rkey=\(urlEncode(rkey))"
+        let data = try await xrpcData(session: session, method: "GET", url: url, body: nil)
+        return try JSONDecoder().decode(GetRecordResponse<SkejScheduleRecord>.self, from: data).value
+    }
+
     public func getSchedule(did: String, rkey: String) async throws -> SkejScheduleRecord? {
         try await getRecord(did: did, collection: "at.skej.schedule", rkey: rkey, as: SkejScheduleRecord.self)
     }

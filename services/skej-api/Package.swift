@@ -12,6 +12,7 @@ let package = Package(
     ],
     dependencies: [
         .package(path: "../../packages/skej-kit"),
+        .package(url: "https://github.com/21-DOT-DEV/swift-secp256k1.git", exact: "0.21.1"),
         .package(url: "https://github.com/hummingbird-project/hummingbird.git", from: "2.6.0"),
         .package(url: "https://github.com/apple/swift-crypto.git", from: "3.12.0"),
     ],
@@ -22,6 +23,7 @@ let package = Package(
                 .product(name: "SkejKit", package: "skej-kit"),
                 .product(name: "Hummingbird", package: "hummingbird"),
                 .product(name: "Crypto", package: "swift-crypto"),
+                .product(name: "libsecp256k1", package: "swift-secp256k1"),
             ],
             path: "Sources/SkejGateway",
             swiftSettings: [.swiftLanguageMode(.v6)]

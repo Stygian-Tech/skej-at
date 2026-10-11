@@ -5,6 +5,8 @@ public protocol PDSClient: Sendable {
     func getRecord<Value: Codable & Sendable>(did: String, collection: String, rkey: String, as type: Value.Type) async throws -> Value?
     func listRecords<Value: Codable & Sendable>(did: String, collection: String, as type: Value.Type) async throws -> [String: Value]
     func writeSchedule(did: String, rkey: String, record: SkejScheduleRecord) async throws
+    func verifySchedulingConnection(did: String) async throws
+    func getScheduleForMutation(did: String, rkey: String) async throws -> SkejScheduleRecord?
     func getSchedule(did: String, rkey: String) async throws -> SkejScheduleRecord?
     func listSchedules(did: String) async throws -> [String: SkejScheduleRecord]
     func deleteSchedule(did: String, rkey: String) async throws
@@ -290,5 +292,12 @@ public enum PDSClientError: Error, Equatable {
               let oauthError = try? JSONDecoder().decode(OAuthErrorResponse.self, from: Data(body.utf8))
         else { return false }
         return oauthError.error == "invalid_grant"
+    }
+}
+
+public extension PDSClient {
+    func verifySchedulingConnection(did: String) async throws {}
+    func getScheduleForMutation(did: String, rkey: String) async throws -> SkejScheduleRecord? {
+        try await getSchedule(did: did, rkey: rkey)
     }
 }

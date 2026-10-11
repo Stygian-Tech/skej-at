@@ -2,6 +2,7 @@ import Foundation
 import SkejKit
 
 public struct SkejServices: Sendable {
+    public let serviceAuthVerifier: SkejServiceAuthVerifier
     public let config: AppConfig
     public let store: SQLiteStore
     public let pdsClient: any PDSClient
@@ -21,8 +22,10 @@ public struct SkejServices: Sendable {
         store: SQLiteStore,
         pdsClient: any PDSClient,
         oauthClient: any OAuthClient,
-        mentionSearchClient: any ActorMentionSearching = PublicActorMentionSearchClient()
+        mentionSearchClient: any ActorMentionSearching = PublicActorMentionSearchClient(),
+        serviceAuthVerifier: SkejServiceAuthVerifier? = nil
     ) {
+        self.serviceAuthVerifier = serviceAuthVerifier ?? SkejServiceAuthVerifier(network: config.network)
         self.config = config
         self.store = store
         self.pdsClient = pdsClient

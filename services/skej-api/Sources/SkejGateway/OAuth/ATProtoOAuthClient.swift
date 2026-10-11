@@ -208,12 +208,12 @@ public struct ATProtoOAuthClient: OAuthClient {
             return ResolvedIdentity(did: handle, pdsEndpoint: try didDocument.pdsEndpoint())
         }
 
-        if let did = try? await resolveHandleViaWellKnown(handle) {
+        if !config.network.isolated, let did = try? await resolveHandleViaWellKnown(handle) {
             let didDocument = try await fetchDIDDocument(did: did)
             return ResolvedIdentity(did: did, pdsEndpoint: try didDocument.pdsEndpoint())
         }
 
-        let url = "https://bsky.social/xrpc/com.atproto.identity.resolveHandle?handle=\(urlEncode(handle))"
+        let url = "\(config.network.handleResolverOrigin)/xrpc/com.atproto.identity.resolveHandle?handle=\(urlEncode(handle))"
         let response = try await http.data(HTTPRequest(url: url))
         let resolved = try JSONDecoder().decode(ResolveHandleResponse.self, from: response.body)
         let didDocument = try await fetchDIDDocument(did: resolved.did)
@@ -234,10 +234,16 @@ public struct ATProtoOAuthClient: OAuthClient {
     private func fetchDIDDocument(did: String) async throws -> DIDDocument {
         let url: String
         if did.starts(with: "did:plc:") {
-            url = "https://plc.directory/\(did)"
+            url = "\(config.network.plcOrigin)/\(did)"
         } else if did.starts(with: "did:web:") {
-            let host = did.dropFirst("did:web:".count).replacingOccurrences(of: ":", with: "/")
-            url = "https://\(host)/.well-known/did.json"
+            let parts = did.dropFirst(8).split(separator: ":", omittingEmptySubsequences: false)
+            guard let authority = parts.first?.removingPercentEncoding,
+                  let origin = SkejATProtoNetwork.origin("https://" + authority),
+                  !config.network.isolated || config.network.didWebOrigins.contains(origin),
+                  parts.dropFirst().allSatisfy({ !$0.isEmpty && $0.allSatisfy({ $0.isASCII && ($0.isLetter || $0.isNumber || $0 == "-" || $0 == "_" || $0 == ".") }) && $0 != "." && $0 != ".." }) else {
+                throw OAuthClientError.identityResolutionFailed("DID is outside the configured ATProto network")
+            }
+            url = origin + (parts.count == 1 ? "/.well-known/did.json" : "/" + parts.dropFirst().joined(separator: "/") + "/did.json")
         } else {
             throw OAuthClientError.identityResolutionFailed("Unsupported DID method")
         }
@@ -246,13 +252,20 @@ public struct ATProtoOAuthClient: OAuthClient {
     }
 
     private func fetchProtectedResourceMetadata(pdsEndpoint: String) async throws -> ProtectedResourceMetadata {
+        guard config.network.allowsPDS(pdsEndpoint) else { throw HTTPClientError.invalidURL("PDS is outside the configured ATProto network") }
         let response = try await http.data(HTTPRequest(url: "\(pdsEndpoint)/.well-known/oauth-protected-resource"))
         return try JSONDecoder().decode(ProtectedResourceMetadata.self, from: response.body)
     }
 
     private func fetchAuthorizationServerMetadata(authServer: String) async throws -> AuthorizationServerMetadata {
+        guard config.network.allowsPDS(authServer) else { throw HTTPClientError.invalidURL("OAuth server is outside the configured ATProto network") }
         let response = try await http.data(HTTPRequest(url: "\(authServer)/.well-known/oauth-authorization-server"))
         let metadata = try JSONDecoder().decode(AuthorizationServerMetadata.self, from: response.body)
+        guard config.network.allowsOAuthEndpoint(metadata.authorizationEndpoint),
+              config.network.allowsOAuthEndpoint(metadata.tokenEndpoint),
+              config.network.allowsOAuthEndpoint(metadata.pushedAuthorizationRequestEndpoint) else {
+            throw OAuthClientError.authorizationServerUnsupported("OAuth endpoints are outside the configured ATProto network")
+        }
         guard metadata.scopesSupported.contains("atproto") else {
             throw OAuthClientError.authorizationServerUnsupported("Authorization server does not advertise atproto")
         }

@@ -8,6 +8,8 @@ public enum AppEnvironment: String, Sendable {
 }
 
 public struct AppConfig: Sendable {
+    public let network: SkejATProtoNetwork
+    public let bindHost: String
     public let port: Int
     public let environment: AppEnvironment
     public let publicOrigin: String
@@ -39,8 +41,12 @@ public struct AppConfig: Sendable {
         engagementCollectorIntervalSeconds: UInt64 = 15 * 60,
         engagementRecentIntervalSeconds: Int = 15 * 60,
         engagementOldIntervalSeconds: Int = 6 * 60 * 60,
-        engagementAppViewOrigin: String = "https://public.api.bsky.app"
+        engagementAppViewOrigin: String = "https://public.api.bsky.app",
+        network: SkejATProtoNetwork? = nil,
+        bindHost: String = "0.0.0.0"
     ) {
+        self.network = network ?? SkejATProtoNetwork(environment: environment, publicOrigin: publicOrigin)
+        self.bindHost = bindHost
         self.port = port
         self.environment = environment
         self.publicOrigin = publicOrigin.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
@@ -116,7 +122,9 @@ public struct AppConfig: Sendable {
             engagementCollectorIntervalSeconds: engagementCollectorInterval,
             engagementRecentIntervalSeconds: engagementRecentInterval,
             engagementOldIntervalSeconds: engagementOldInterval,
-            engagementAppViewOrigin: engagementAppViewOrigin
+            engagementAppViewOrigin: engagementAppViewOrigin,
+            network: SkejATProtoNetwork(environment: appEnv, publicOrigin: origin, environmentValues: env),
+            bindHost: appEnv == .local ? "127.0.0.1" : "0.0.0.0"
         )
     }
 

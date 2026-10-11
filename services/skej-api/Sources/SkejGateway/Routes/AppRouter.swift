@@ -9,7 +9,19 @@ public func buildRouter(services: SkejServices) -> Router<BasicRequestContext> {
     let logger = Logger(label: "skej.router")
     let router = Router(context: BasicRequestContext.self)
     router.add(middleware: ErrorMiddleware())
-    router.add(middleware: CorsMiddleware())
+    router.add(middleware: CorsMiddleware(allowedOrigins: services.config.network.browserOrigins.union([services.config.publicOrigin, services.config.webOrigin].compactMap { $0 })))
+    router.add(middleware: ServiceAuthRouteMiddleware())
+
+    router.get(".well-known/did.json") { _, _ in
+        guard !services.config.network.serviceDID.isEmpty else { throw HTTPError(.notFound) }
+        return try jsonResponse(SkejServiceIdentity.document(network: services.config.network))
+    }
+
+    router.get("scheduling/connected") { request, _ in
+        let viewer = try await authenticate(request, services: services)
+        _ = try await SkejSchedulingConnection.require(did: viewer.did, services: services)
+        return SchedulingConnectedPage.response()
+    }
 
     router.get("health") { _, _ in
         try jsonResponse(["status": "ok", "service": "skej-api"])
@@ -1161,6 +1173,7 @@ private func xrpcAccount(
 ) async throws -> (Viewer, String) {
     let viewer = try await authenticate(request, services: services)
     let selected = did ?? request.uri.queryParameters.get("accountDid") ?? viewer.defaultAccountDid ?? viewer.did
+    try enforceServiceActor(selected, viewer: viewer, request: request)
     let accounts = try await accessibleAccounts(for: viewer, services: services)
     guard accounts.contains(where: { $0.did == selected }) else {
         throw HTTPError(.notFound)
@@ -1656,65 +1669,101 @@ private func createSchedule(did: String, body: CreateScheduleRequest, viewer: Vi
 
 private func updateSchedule(did: String, rkey: String, body: CreateScheduleRequest, viewer: Viewer, services: SkejServices) async throws -> Response {
     try await requireWriteAuthorization(did: did, viewer: viewer, services: services)
-    let existing = try await services.store.scheduleJob(did: did, rkey: rkey)
-    guard existing != nil else {
+    guard try await services.store.scheduleJob(did: did, rkey: rkey) != nil else {
         throw APIError(status: .notFound, code: "not_found", message: "Schedule not found")
     }
-    let existingRecord = try await services.pdsClient.getSchedule(did: did, rkey: rkey)
-    var record = body.record
-    coerceDraftWithoutProFeatures(&record, services: services)
-    try validateExplicitFacets(in: record)
-    canonicalizeForPersistence(&record, preservingRkeysFrom: existingRecord?.posts)
-    try validate(record: record)
-    let now = Timestamp.iso8601()
-    if record.status == .scheduled, existingRecord?.status == .draft {
-        let permission = try await requireBrandCapability(.approve, brandDid: did, viewer: viewer, services: services)
-        record.teamUri = record.teamUri ?? existingRecord?.teamUri ?? permission?.teamUri
-        record.approvedByDid = viewer.did
-        record.approvedAt = now
-    } else {
-        _ = try await requireBrandCapability(record.status == .draft ? .create : .approve, brandDid: did, viewer: viewer, services: services)
+    let leaseID = UUID().uuidString
+    let nowDate = Date()
+    guard try await services.store.claimScheduleEdit(did: did, rkey: rkey, leaseID: leaseID,
+        now: Timestamp.iso8601(nowDate), expiresAt: Timestamp.iso8601(nowDate.addingTimeInterval(300))) else {
+        throw APIError(status: .conflict, code: "ScheduleNotEditable", message: "This schedule is being published, changed, or already finished")
     }
-    record.createdByDid = record.createdByDid ?? existingRecord?.createdByDid ?? viewer.did
-    record.publishRkey = record.publishRkey.isEmpty ? (existing?.publishRkey ?? ATProtoTID.generate()) : record.publishRkey
-    record.updatedAt = now
-    record = try await writeCalendarEventFirst(did: did, rkey: rkey, record: record, services: services)
-    try await services.pdsClient.writeSchedule(did: did, rkey: rkey, record: record)
-    let updated = job(did: did, rkey: rkey, record: record, attempts: existing?.attempts ?? 0)
-    try await services.store.upsertScheduleJob(updated, now: now)
-    try await services.store.insertAuditEvent(
-        did: did,
-        scheduleRkey: rkey,
-        action: "schedule_edited",
-        message: "Schedule edited.",
-        now: now
-    )
-    return try jsonResponse(summary(job: updated, record: record))
+    do {
+        let existing = try await services.store.scheduleJob(did: did, rkey: rkey)
+        guard existing != nil else {
+            throw APIError(status: .notFound, code: "not_found", message: "Schedule not found")
+        }
+        let existingRecord = try await services.pdsClient.getScheduleForMutation(did: did, rkey: rkey)
+        guard let existingRecord else { throw APIError(status: .conflict, code: "ScheduleChanged", message: "Schedule record is unavailable") }
+        try ensureEditableSchedule(existingRecord)
+        var record = body.record
+        try ensureEditableSchedule(record)
+        coerceDraftWithoutProFeatures(&record, services: services)
+        try validateExplicitFacets(in: record)
+        canonicalizeForPersistence(&record, preservingRkeysFrom: existingRecord.posts)
+        try validate(record: record)
+        let now = Timestamp.iso8601()
+        if record.status == .scheduled, existingRecord.status == .draft {
+            let permission = try await requireBrandCapability(.approve, brandDid: did, viewer: viewer, services: services)
+            record.teamUri = record.teamUri ?? existingRecord.teamUri ?? permission?.teamUri
+            record.approvedByDid = viewer.did
+            record.approvedAt = now
+        } else {
+            _ = try await requireBrandCapability(record.status == .draft ? .create : .approve, brandDid: did, viewer: viewer, services: services)
+        }
+        record.createdByDid = record.createdByDid ?? existingRecord.createdByDid ?? viewer.did
+        record.publishRkey = record.publishRkey.isEmpty ? (existing?.publishRkey ?? ATProtoTID.generate()) : record.publishRkey
+        record.updatedAt = now
+        record = try await writeCalendarEventFirst(did: did, rkey: rkey, record: record, services: services)
+        try await services.pdsClient.writeSchedule(did: did, rkey: rkey, record: record)
+        let updated = job(did: did, rkey: rkey, record: record, attempts: existing?.attempts ?? 0)
+        try await services.store.upsertScheduleJob(updated, now: now)
+        try await services.store.insertAuditEvent(
+            did: did,
+            scheduleRkey: rkey,
+            action: "schedule_edited",
+            message: "Schedule edited.",
+            now: now
+        )
+        let response = try jsonResponse(summary(job: updated, record: record))
+        try await services.store.releaseScheduleEdit(did: did, rkey: rkey, leaseID: leaseID)
+        return response
+    } catch {
+        try? await services.store.releaseScheduleEdit(did: did, rkey: rkey, leaseID: leaseID)
+        throw error
+    }
 }
 
 private func cancelSchedule(did: String, rkey: String, viewer: Viewer, services: SkejServices) async throws -> Response {
     try await requireWriteAuthorization(did: did, viewer: viewer, services: services)
-    guard var record = try await services.pdsClient.getSchedule(did: did, rkey: rkey),
-          let existing = try await services.store.scheduleJob(did: did, rkey: rkey)
-    else {
+    guard try await services.store.scheduleJob(did: did, rkey: rkey) != nil else {
         throw APIError(status: .notFound, code: "not_found", message: "Schedule not found")
     }
-    let now = Timestamp.iso8601()
-    record.status = .canceled
-    record.updatedAt = now
-    record = try await writeCalendarEventFirst(did: did, rkey: rkey, record: record, services: services)
-    try await services.pdsClient.writeSchedule(did: did, rkey: rkey, record: record)
-    var updated = existing
-    updated.status = .canceled
-    try await services.store.upsertScheduleJob(updated, now: now)
-    try await services.store.insertAuditEvent(
-        did: did,
-        scheduleRkey: rkey,
-        action: "schedule_canceled",
-        message: "Schedule canceled.",
-        now: now
-    )
-    return try jsonResponse(summary(job: updated, record: record))
+    let leaseID = UUID().uuidString
+    let nowDate = Date()
+    guard try await services.store.claimScheduleEdit(did: did, rkey: rkey, leaseID: leaseID,
+        now: Timestamp.iso8601(nowDate), expiresAt: Timestamp.iso8601(nowDate.addingTimeInterval(300))) else {
+        throw APIError(status: .conflict, code: "ScheduleNotEditable", message: "This schedule is being published, changed, or already finished")
+    }
+    do {
+        guard var record = try await services.pdsClient.getScheduleForMutation(did: did, rkey: rkey),
+              let existing = try await services.store.scheduleJob(did: did, rkey: rkey)
+        else {
+            throw APIError(status: .notFound, code: "not_found", message: "Schedule not found")
+        }
+        try ensureEditableSchedule(record)
+        let now = Timestamp.iso8601()
+        record.status = .canceled
+        record.updatedAt = now
+        record = try await writeCalendarEventFirst(did: did, rkey: rkey, record: record, services: services)
+        try await services.pdsClient.writeSchedule(did: did, rkey: rkey, record: record)
+        var updated = existing
+        updated.status = .canceled
+        try await services.store.upsertScheduleJob(updated, now: now)
+        try await services.store.insertAuditEvent(
+            did: did,
+            scheduleRkey: rkey,
+            action: "schedule_canceled",
+            message: "Schedule canceled.",
+            now: now
+        )
+        let response = try jsonResponse(summary(job: updated, record: record))
+        try await services.store.releaseScheduleEdit(did: did, rkey: rkey, leaseID: leaseID)
+        return response
+    } catch {
+        try? await services.store.releaseScheduleEdit(did: did, rkey: rkey, leaseID: leaseID)
+        throw error
+    }
 }
 
 private func retrySchedule(did: String, rkey: String, viewer: Viewer, services: SkejServices) async throws -> Response {
@@ -2007,7 +2056,17 @@ private func validate(team: SkejTeamRecord) throws {
 }
 
 func authenticate(_ request: Request, services: SkejServices) async throws -> Viewer {
-    if services.config.environment != .prod,
+    if let authorization = request.headers[.authorization] {
+        guard authorization.hasPrefix("Bearer "), ServiceAuthRouteMiddleware<BasicRequestContext>.allows(request) else {
+            throw APIError(status: .unauthorized, code: "InvalidServiceAuth", message: "Service authentication is not valid for this route")
+        }
+        let method = String(request.uri.path.dropFirst("/xrpc/".count))
+        let did = try await services.serviceAuthVerifier.verify(String(authorization.dropFirst(7)), method: method, store: services.store)
+        let account = try await SkejSchedulingConnection.require(did: did, services: services)
+        return Viewer(did: did, handle: account.handle, displayName: account.displayName, avatar: account.avatar, defaultAccountDid: did)
+    }
+
+    if services.config.environment == .test || (services.config.environment == .local && !services.config.liveATProtoEnabled && ["localhost", "127.0.0.1", "::1"].contains(URL(string: services.config.publicOrigin)?.host ?? "")),
        let did = request.headers[HTTPField.Name("X-Skej-DID")!],
        !did.isEmpty
     {
@@ -2064,6 +2123,7 @@ private func coerceDraftWithoutProFeatures(_ record: inout SkejScheduleRecord, s
 
 private func authorize(did: String, request: Request, services: SkejServices) async throws -> Viewer {
     let viewer = try await authenticate(request, services: services)
+    try enforceServiceActor(did, viewer: viewer, request: request)
     // Without Pro, other-account DIDs must be indistinguishable from routes that
     // don't exist, so this throws the same HTTPError the router emits for an
     // unmatched path rather than a forbidden error.
@@ -2358,5 +2418,18 @@ private extension Response {
             copy.headers[field.name] = field.value
         }
         return copy
+    }
+}
+
+private func enforceServiceActor(_ did: String, viewer: Viewer, request: Request) throws {
+    if request.headers[.authorization] != nil && did != viewer.did {
+        throw APIError(status: .forbidden, code: "ActorMismatch", message: "Service tokens authorize only their issuing account")
+    }
+}
+
+private func ensureEditableSchedule(_ record: SkejScheduleRecord) throws {
+    guard [.draft, .scheduled, .blocked, .failed].contains(record.status),
+          record.publishedUri == nil, record.publishedCid == nil, record.publishedPosts.isEmpty else {
+        throw APIError(status: .conflict, code: "ScheduleNotEditable", message: "Published, publishing, or canceled schedules cannot be edited")
     }
 }

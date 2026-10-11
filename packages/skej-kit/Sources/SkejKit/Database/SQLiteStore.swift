@@ -31,6 +31,17 @@ public actor SQLiteStore {
         try exec("PRAGMA journal_mode = WAL")
         try exec(
             """
+            CREATE TABLE IF NOT EXISTS schedule_edit_leases (
+                did TEXT NOT NULL, rkey TEXT NOT NULL, lease_id TEXT NOT NULL, expires_at TEXT NOT NULL,
+                PRIMARY KEY (did, rkey)
+            );
+            CREATE TABLE IF NOT EXISTS service_auth_replays (
+                issuer TEXT NOT NULL,
+                jti TEXT NOT NULL,
+                expires_at INTEGER NOT NULL,
+                PRIMARY KEY (issuer, jti)
+            );
+            CREATE INDEX IF NOT EXISTS service_auth_replays_expiry_idx ON service_auth_replays (expires_at);
             CREATE TABLE IF NOT EXISTS oauth_states (
                 state TEXT PRIMARY KEY,
                 handle TEXT NOT NULL,
@@ -573,6 +584,15 @@ public actor SQLiteStore {
         ).compactMap(proEntitlement(from:))
     }
 
+    /// Claim after signature verification and before any authenticated operation.
+    /// SQLite uniqueness makes replay protection survive restarts and concurrent requests.
+    public func claimServiceAuth(issuer: String, jti: String, expiresAt: Int, now: Int) throws -> Bool {
+        try run("DELETE FROM service_auth_replays WHERE expires_at <= ?", [String(now)])
+        try run("INSERT OR IGNORE INTO service_auth_replays (issuer, jti, expires_at) VALUES (?, ?, ?)",
+                    [issuer, jti, String(expiresAt)])
+        return sqlite3_changes(db) == 1
+    }
+
     public func oauthSession(did: String) throws -> OAuthSessionRecord? {
         let rows = try query(
             "SELECT did, handle, token_json, dpop_key_json FROM oauth_sessions WHERE did = ? LIMIT 1",
@@ -831,6 +851,22 @@ public actor SQLiteStore {
         try run("DELETE FROM scheduled_jobs WHERE did = ? AND rkey = ?", [did, rkey])
     }
 
+    /// Serializes API edits with the worker claim without holding SQLite transactions across HTTP.
+    public func claimScheduleEdit(did: String, rkey: String, leaseID: String, now: String, expiresAt: String) throws -> Bool {
+        try run("DELETE FROM schedule_edit_leases WHERE expires_at <= ?", [now])
+        try run("""
+            INSERT OR IGNORE INTO schedule_edit_leases (did, rkey, lease_id, expires_at)
+            SELECT did, rkey, ?, ? FROM scheduled_jobs
+            WHERE did = ? AND rkey = ? AND status IN ('draft', 'scheduled', 'blocked', 'failed')
+                AND published_uri IS NULL
+            """, [leaseID, expiresAt, did, rkey])
+        return sqlite3_changes(db) == 1
+    }
+
+    public func releaseScheduleEdit(did: String, rkey: String, leaseID: String) throws {
+        try run("DELETE FROM schedule_edit_leases WHERE did = ? AND rkey = ? AND lease_id = ?", [did, rkey, leaseID])
+    }
+
     public func claimDueJobs(now: String, limit: Int = 10) throws -> [ScheduledJob] {
         let jobs = try query(
             """
@@ -839,12 +875,13 @@ public actor SQLiteStore {
                    published_uri, published_cid, depends_on_schedule_uri, parent_published_uri
             FROM scheduled_jobs
             WHERE status = 'scheduled'
+                AND NOT EXISTS (SELECT 1 FROM schedule_edit_leases e WHERE e.did = scheduled_jobs.did AND e.rkey = scheduled_jobs.rkey AND e.expires_at > ?)
                 AND COALESCE(scheduled_at, scheduled_for) <= ?
                 AND (next_attempt_at IS NULL OR next_attempt_at <= ?)
             ORDER BY scheduled_at ASC
             LIMIT ?
             """,
-            [now, now, String(limit)]
+            [now, now, now, String(limit)]
         ).compactMap(job(from:))
 
         for job in jobs {

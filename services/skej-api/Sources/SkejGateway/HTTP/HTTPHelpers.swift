@@ -105,7 +105,8 @@ public struct ErrorMiddleware<Context: RequestContext>: RouterMiddleware {
 }
 
 public struct CorsMiddleware<Context: RequestContext>: RouterMiddleware {
-    public init() {}
+    private let allowedOrigins: Set<String>?
+    public init(allowedOrigins: Set<String>? = nil) { self.allowedOrigins = allowedOrigins }
 
     public func handle(
         _ request: Request,
@@ -124,7 +125,9 @@ public struct CorsMiddleware<Context: RequestContext>: RouterMiddleware {
 
     private func corsHeaders(for request: Request) -> HTTPFields {
         var headers = HTTPFields()
-        headers[.accessControlAllowOrigin] = request.headers[.origin] ?? "*"
+        guard let origin = request.headers[.origin] else { return headers }
+        guard allowedOrigins?.contains(origin) ?? true else { return headers }
+        headers[.accessControlAllowOrigin] = origin
         headers[.accessControlAllowMethods] = "GET, POST, PATCH, DELETE, OPTIONS"
         headers[.accessControlAllowHeaders] = "Content-Type, Authorization, Cookie, X-Skej-DID"
         headers[.accessControlAllowCredentials] = "true"

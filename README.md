@@ -30,6 +30,10 @@ because they are infrastructure or OAuth protocol endpoints, not XRPC methods.
 The legacy `/v1` surface remains temporarily as a compatibility adapter; the
 web app and new consumers use XRPC.
 
+Account-bound clients can reuse Skej’s scheduler through five existing XRPC
+methods. See [service authentication and scheduling](docs/api/service-auth.md)
+for discovery, credentials, request contracts, and recovery.
+
 ## Local Development
 
 ```bash

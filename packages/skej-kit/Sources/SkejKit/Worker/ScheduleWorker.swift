@@ -47,34 +47,47 @@ public struct ScheduleWorker: Sendable {
                   let parent = try await store.findPublishedSchedule(scheduleUri: dependency),
                   let parentPublishedUri = parent.record.publishedUri
             else { continue }
-            if var record = try await pdsClient.getSchedule(did: job.did, rkey: job.rkey) {
-                let relationship = record.dependency?.relationship ?? .after
-                let parentPublishedCid = parent.record.publishedCid ?? parent.record.publishedPosts.first?.cid
-                if relationship != .after, parentPublishedCid == nil { continue }
-                record.status = .scheduled
-                record.lastError = nil
-                record.dependency = ScheduleDependency(
-                    dependsOnScheduleUri: dependency,
-                    relationship: relationship,
+            let leaseID = UUID().uuidString
+            let leaseNow = ISO8601DateFormatter().date(from: nowString) ?? Date()
+            guard try await store.claimScheduleEdit(did: job.did, rkey: job.rkey, leaseID: leaseID,
+                now: nowString, expiresAt: Timestamp.iso8601(leaseNow.addingTimeInterval(300))) else { continue }
+            do {
+                if var record = try await pdsClient.getSchedule(did: job.did, rkey: job.rkey) {
+                    let relationship = record.dependency?.relationship ?? .after
+                    let parentPublishedCid = parent.record.publishedCid ?? parent.record.publishedPosts.first?.cid
+                    if relationship != .after, parentPublishedCid == nil {
+                        try await store.releaseScheduleEdit(did: job.did, rkey: job.rkey, leaseID: leaseID)
+                        continue
+                    }
+                    record.status = .scheduled
+                    record.lastError = nil
+                    record.dependency = ScheduleDependency(
+                        dependsOnScheduleUri: dependency,
+                        relationship: relationship,
+                        parentPublishedUri: parentPublishedUri,
+                        parentPublishedCid: parentPublishedCid
+                    )
+                    record.updatedAt = nowString
+                    try await pdsClient.writeSchedule(did: job.did, rkey: job.rkey, record: record)
+                }
+                try await store.markJobScheduled(
+                    did: job.did,
+                    rkey: job.rkey,
                     parentPublishedUri: parentPublishedUri,
-                    parentPublishedCid: parentPublishedCid
+                    now: nowString
                 )
-                record.updatedAt = nowString
-                try await pdsClient.writeSchedule(did: job.did, rkey: job.rkey, record: record)
+                try await store.insertAuditEvent(
+                    did: job.did,
+                    scheduleRkey: job.rkey,
+                    action: "dependency_unblocked",
+                    message: "Parent published as \(parentPublishedUri).",
+                    now: nowString
+                )
+                try await store.releaseScheduleEdit(did: job.did, rkey: job.rkey, leaseID: leaseID)
+            } catch {
+                try? await store.releaseScheduleEdit(did: job.did, rkey: job.rkey, leaseID: leaseID)
+                throw error
             }
-            try await store.markJobScheduled(
-                did: job.did,
-                rkey: job.rkey,
-                parentPublishedUri: parentPublishedUri,
-                now: nowString
-            )
-            try await store.insertAuditEvent(
-                did: job.did,
-                scheduleRkey: job.rkey,
-                action: "dependency_unblocked",
-                message: "Parent published as \(parentPublishedUri).",
-                now: nowString
-            )
         }
     }
 
