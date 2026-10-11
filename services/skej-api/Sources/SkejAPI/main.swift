@@ -8,7 +8,7 @@ struct SkejAPIApp {
     static func main() async throws {
         let config = AppConfig.load()
         let logger = Logger(label: "skej-api")
-        let store = try SQLiteStore(path: config.sqlitePath)
+        let store = try SQLiteStore(path: config.sqlitePath, requiresAuthEncryption: config.liveATProtoEnabled)
         try await store.migrate()
         let pdsClient: any PDSClient
         let oauthClient: any OAuthClient

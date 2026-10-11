@@ -83,6 +83,13 @@ server-side grant; it returns no credentials or account identity. Set
 and audience. This is independent of `SKEJ_PUBLIC_ORIGIN`, which continues to own
 Skej's existing OAuth client metadata. Existing worker and persistent SQLite
 configuration remains required; this API does not create another scheduler.
+Live OAuth storage requires `SKEJ_AUTH_ENCRYPTION_KEY`. Keep this stable secret in
+the service environment, outside the repository. Startup validates existing
+ciphertext, transactionally encrypts legacy session and pending OAuth secrets,
+and compacts/truncates SQLite and its WAL before serving requests. A missing or
+wrong key fails closed; do not rotate it without a separate migration. Volume
+snapshots and historical backups may still contain older plaintext and need
+their existing retention controls.
 `SKEJ_CORS_ORIGINS` can admit additional exact HTTPS browser origins. Hosted
 defaults include the corresponding Skej and Social Wire web origins; local
 defaults include loopback Social Wire on port 3016.

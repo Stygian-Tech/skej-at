@@ -10,10 +10,16 @@ private let sqliteTransient = unsafeBitCast(-1, to: sqlite3_destructor_type.self
 
 public actor SQLiteStore {
     private var db: OpaquePointer?
+    private let authKey: SymmetricKey?
     private let encoder = JSONEncoder()
     private let decoder = JSONDecoder()
 
-    public init(path: String) throws {
+    public init(path: String, authEncryptionSecret: String? = ProcessInfo.processInfo.environment["SKEJ_AUTH_ENCRYPTION_KEY"], requiresAuthEncryption: Bool = false) throws {
+        let key = authEncryptionSecret.flatMap { $0.isEmpty ? nil : SymmetricKey(data: Data(SHA256.hash(data: Data($0.utf8)))) }
+        if requiresAuthEncryption && key == nil {
+            throw SQLiteStoreError.statement(message: "SKEJ_AUTH_ENCRYPTION_KEY is required for live OAuth storage")
+        }
+        authKey = key
         if path != ":memory:" {
             let url = URL(fileURLWithPath: path)
             try FileManager.default.createDirectory(
@@ -29,6 +35,7 @@ public actor SQLiteStore {
     public func migrate() throws {
         try exec("PRAGMA foreign_keys = ON")
         try exec("PRAGMA journal_mode = WAL")
+        try exec("PRAGMA secure_delete = ON")
         try exec(
             """
             CREATE TABLE IF NOT EXISTS schedule_edit_leases (
@@ -205,6 +212,60 @@ public actor SQLiteStore {
             FROM web_sessions;
             """
         )
+        try migrateAuthVault()
+    }
+
+    /// Startup-only upgrade: validate every ciphertext before changing any row,
+    /// then atomically encrypt legacy secrets and scrub freed database/WAL pages.
+    private func migrateAuthVault() throws {
+        try exec("CREATE TABLE IF NOT EXISTS auth_vault_cleanup (id INTEGER PRIMARY KEY CHECK(id = 1), pending INTEGER NOT NULL)")
+        let sessions = try query("SELECT did, token_json, dpop_key_json FROM oauth_sessions", [])
+        let states = try query("SELECT state, pkce_verifier, dpop_key_json FROM oauth_states", [])
+        for row in sessions + states {
+            for field in ["token_json", "dpop_key_json", "pkce_verifier"] {
+                if let value = row[field], value.hasPrefix("aesgcm:v1:") { _ = try decryptAuthMaterial(value) }
+            }
+        }
+        guard authKey != nil else { return }
+        var changed = false
+        try exec("BEGIN IMMEDIATE")
+        do {
+            for row in sessions {
+                guard let did = row["did"], let token = row["token_json"], let key = row["dpop_key_json"] else { continue }
+                if !token.hasPrefix("aesgcm:v1:") || !key.hasPrefix("aesgcm:v1:") {
+                    try run("UPDATE oauth_sessions SET token_json = ?, dpop_key_json = ? WHERE did = ?", [try encryptIfNeeded(token), try encryptIfNeeded(key), did])
+                    changed = true
+                }
+            }
+            for row in states {
+                guard let state = row["state"], let verifier = row["pkce_verifier"] else { continue }
+                let key = row["dpop_key_json"]
+                if !verifier.hasPrefix("aesgcm:v1:") || key.map({ !$0.hasPrefix("aesgcm:v1:") }) == true {
+                    try run("UPDATE oauth_states SET pkce_verifier = ?, dpop_key_json = ? WHERE state = ?", [try encryptIfNeeded(verifier), try key.map(encryptIfNeeded), state])
+                    changed = true
+                }
+            }
+            if changed { try exec("INSERT OR REPLACE INTO auth_vault_cleanup (id, pending) VALUES (1, 1)") }
+            try exec("COMMIT")
+        } catch { try? exec("ROLLBACK"); throw error }
+        // The marker survives an interrupted cleanup; the next startup retries it.
+        if try query("SELECT pending FROM auth_vault_cleanup WHERE id = 1", []).first?["pending"] == "1" {
+            try checkpointAuthVault()
+            try exec("VACUUM")
+            try checkpointAuthVault()
+            try exec("UPDATE auth_vault_cleanup SET pending = 0 WHERE id = 1")
+            try checkpointAuthVault()
+        }
+    }
+
+    private func checkpointAuthVault() throws {
+        guard try query("PRAGMA wal_checkpoint(TRUNCATE)", []).first?["busy"] == "0" else {
+            throw SQLiteStoreError.statement(message: "Auth vault cleanup is blocked by an active database reader")
+        }
+    }
+
+    private func encryptIfNeeded(_ value: String) throws -> String {
+        value.hasPrefix("aesgcm:v1:") ? value : try encryptAuthMaterial(value)
     }
 
     public func createOAuthState(
@@ -229,7 +290,7 @@ public actor SQLiteStore {
                  purpose, initiator_did, invite_token, return_to, expires_at)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
-            [state, handle, pkceVerifier, nonce, authServer, tokenEndpoint, pdsEndpoint, dpopKeyJSON,
+            [state, handle, try encryptAuthMaterial(pkceVerifier), nonce, authServer, tokenEndpoint, pdsEndpoint, try dpopKeyJSON.map(encryptAuthMaterial),
              purpose.rawValue, initiatorDid, inviteToken, returnTo, expiresAt]
         )
     }
@@ -256,12 +317,12 @@ public actor SQLiteStore {
         return OAuthStateRecord(
             state: state,
             handle: handle,
-            pkceVerifier: pkceVerifier,
+            pkceVerifier: try decryptAuthMaterial(pkceVerifier),
             nonce: nonce,
             authServer: row["auth_server"],
             tokenEndpoint: row["token_endpoint"],
             pdsEndpoint: row["pds_endpoint"],
-            dpopKeyJSON: row["dpop_key_json"],
+            dpopKeyJSON: try row["dpop_key_json"].map(decryptAuthMaterial),
             purpose: row["purpose"].flatMap(OAuthPurpose.init(rawValue:)) ?? .signIn,
             initiatorDid: row["initiator_did"],
             inviteToken: row["invite_token"],
@@ -1320,12 +1381,7 @@ public actor SQLiteStore {
         return plaintext
     }
 
-    private func authEncryptionKey() -> SymmetricKey? {
-        guard let raw = ProcessInfo.processInfo.environment["SKEJ_AUTH_ENCRYPTION_KEY"],
-              !raw.isEmpty
-        else { return nil }
-        return SymmetricKey(data: Data(SHA256.hash(data: Data(raw.utf8))))
-    }
+    private func authEncryptionKey() -> SymmetricKey? { authKey }
 }
 
 public struct OAuthStateRecord: Equatable, Sendable {
