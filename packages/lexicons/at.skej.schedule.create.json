@@ -45,9 +45,18 @@
         },
         {
           "name": "AccountNeedsReauth"
+        },
+        {
+          "name": "InvalidServiceAuth"
+        },
+        {
+          "name": "ActorMismatch"
+        },
+        {
+          "name": "account_needs_reauth"
         }
       ],
-      "description": "Procedure contract for at.skej.schedule.create."
+      "description": "Procedure contract for at.skej.schedule.create. Supports account-bound Skej service authentication for the token issuer only."
     }
   }
 }

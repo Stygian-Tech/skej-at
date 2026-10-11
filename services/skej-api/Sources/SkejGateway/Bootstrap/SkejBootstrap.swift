@@ -8,7 +8,7 @@ public enum SkejBootstrap {
         let router = buildRouter(services: services)
         let app = Application(
             router: router,
-            configuration: .init(address: .hostname("0.0.0.0", port: config.port))
+            configuration: .init(address: .hostname(config.bindHost, port: config.port))
         )
         let worker = ScheduleWorker(store: services.store, pdsClient: services.pdsClient, logger: logger)
         let engagementCollector = EngagementCollectorRuntime(services: services, logger: logger)

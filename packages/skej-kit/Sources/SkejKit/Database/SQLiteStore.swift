@@ -10,10 +10,16 @@ private let sqliteTransient = unsafeBitCast(-1, to: sqlite3_destructor_type.self
 
 public actor SQLiteStore {
     private var db: OpaquePointer?
+    private let authKey: SymmetricKey?
     private let encoder = JSONEncoder()
     private let decoder = JSONDecoder()
 
-    public init(path: String) throws {
+    public init(path: String, authEncryptionSecret: String? = ProcessInfo.processInfo.environment["SKEJ_AUTH_ENCRYPTION_KEY"], requiresAuthEncryption: Bool = false) throws {
+        let key = authEncryptionSecret.flatMap { $0.isEmpty ? nil : SymmetricKey(data: Data(SHA256.hash(data: Data($0.utf8)))) }
+        if requiresAuthEncryption && key == nil {
+            throw SQLiteStoreError.statement(message: "SKEJ_AUTH_ENCRYPTION_KEY is required for live OAuth storage")
+        }
+        authKey = key
         if path != ":memory:" {
             let url = URL(fileURLWithPath: path)
             try FileManager.default.createDirectory(
@@ -29,8 +35,20 @@ public actor SQLiteStore {
     public func migrate() throws {
         try exec("PRAGMA foreign_keys = ON")
         try exec("PRAGMA journal_mode = WAL")
+        try exec("PRAGMA secure_delete = ON")
         try exec(
             """
+            CREATE TABLE IF NOT EXISTS schedule_edit_leases (
+                did TEXT NOT NULL, rkey TEXT NOT NULL, lease_id TEXT NOT NULL, expires_at TEXT NOT NULL,
+                PRIMARY KEY (did, rkey)
+            );
+            CREATE TABLE IF NOT EXISTS service_auth_replays (
+                issuer TEXT NOT NULL,
+                jti TEXT NOT NULL,
+                expires_at INTEGER NOT NULL,
+                PRIMARY KEY (issuer, jti)
+            );
+            CREATE INDEX IF NOT EXISTS service_auth_replays_expiry_idx ON service_auth_replays (expires_at);
             CREATE TABLE IF NOT EXISTS oauth_states (
                 state TEXT PRIMARY KEY,
                 handle TEXT NOT NULL,
@@ -194,6 +212,62 @@ public actor SQLiteStore {
             FROM web_sessions;
             """
         )
+        try migrateAuthVault()
+    }
+
+    /// Startup-only upgrade: validate every ciphertext before changing any row,
+    /// then atomically encrypt legacy secrets and scrub freed database/WAL pages.
+    private func migrateAuthVault() throws {
+        try exec("CREATE TABLE IF NOT EXISTS auth_vault_cleanup (id INTEGER PRIMARY KEY CHECK(id = 1), pending INTEGER NOT NULL)")
+        var changed = false
+        try exec("BEGIN IMMEDIATE")
+        do {
+            // Hold the write lease through reading/validation so another process
+            // cannot refresh a grant between the snapshot and its encrypted write.
+            let sessions = try query("SELECT did, token_json, dpop_key_json FROM oauth_sessions", [])
+            let states = try query("SELECT state, pkce_verifier, dpop_key_json FROM oauth_states", [])
+            for row in sessions + states {
+                for field in ["token_json", "dpop_key_json", "pkce_verifier"] {
+                    if let value = row[field], value.hasPrefix("aesgcm:v1:") { _ = try decryptAuthMaterial(value) }
+                }
+            }
+            guard authKey != nil else { try exec("COMMIT"); return }
+            for row in sessions {
+                guard let did = row["did"], let token = row["token_json"], let key = row["dpop_key_json"] else { continue }
+                if !token.hasPrefix("aesgcm:v1:") || !key.hasPrefix("aesgcm:v1:") {
+                    try run("UPDATE oauth_sessions SET token_json = ?, dpop_key_json = ? WHERE did = ?", [try encryptIfNeeded(token), try encryptIfNeeded(key), did])
+                    changed = true
+                }
+            }
+            for row in states {
+                guard let state = row["state"], let verifier = row["pkce_verifier"] else { continue }
+                let key = row["dpop_key_json"]
+                if !verifier.hasPrefix("aesgcm:v1:") || key.map({ !$0.hasPrefix("aesgcm:v1:") }) == true {
+                    try run("UPDATE oauth_states SET pkce_verifier = ?, dpop_key_json = ? WHERE state = ?", [try encryptIfNeeded(verifier), try key.map(encryptIfNeeded), state])
+                    changed = true
+                }
+            }
+            if changed { try exec("INSERT OR REPLACE INTO auth_vault_cleanup (id, pending) VALUES (1, 1)") }
+            try exec("COMMIT")
+        } catch { try? exec("ROLLBACK"); throw error }
+        // The marker survives an interrupted cleanup; the next startup retries it.
+        if try query("SELECT pending FROM auth_vault_cleanup WHERE id = 1", []).first?["pending"] == "1" {
+            try checkpointAuthVault()
+            try exec("VACUUM")
+            try checkpointAuthVault()
+            try exec("UPDATE auth_vault_cleanup SET pending = 0 WHERE id = 1")
+            try checkpointAuthVault()
+        }
+    }
+
+    private func checkpointAuthVault() throws {
+        guard try query("PRAGMA wal_checkpoint(TRUNCATE)", []).first?["busy"] == "0" else {
+            throw SQLiteStoreError.statement(message: "Auth vault cleanup is blocked by an active database reader")
+        }
+    }
+
+    private func encryptIfNeeded(_ value: String) throws -> String {
+        value.hasPrefix("aesgcm:v1:") ? value : try encryptAuthMaterial(value)
     }
 
     public func createOAuthState(
@@ -218,7 +292,7 @@ public actor SQLiteStore {
                  purpose, initiator_did, invite_token, return_to, expires_at)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
-            [state, handle, pkceVerifier, nonce, authServer, tokenEndpoint, pdsEndpoint, dpopKeyJSON,
+            [state, handle, try encryptAuthMaterial(pkceVerifier), nonce, authServer, tokenEndpoint, pdsEndpoint, try dpopKeyJSON.map(encryptAuthMaterial),
              purpose.rawValue, initiatorDid, inviteToken, returnTo, expiresAt]
         )
     }
@@ -245,12 +319,12 @@ public actor SQLiteStore {
         return OAuthStateRecord(
             state: state,
             handle: handle,
-            pkceVerifier: pkceVerifier,
+            pkceVerifier: try decryptAuthMaterial(pkceVerifier),
             nonce: nonce,
             authServer: row["auth_server"],
             tokenEndpoint: row["token_endpoint"],
             pdsEndpoint: row["pds_endpoint"],
-            dpopKeyJSON: row["dpop_key_json"],
+            dpopKeyJSON: try row["dpop_key_json"].map(decryptAuthMaterial),
             purpose: row["purpose"].flatMap(OAuthPurpose.init(rawValue:)) ?? .signIn,
             initiatorDid: row["initiator_did"],
             inviteToken: row["invite_token"],
@@ -573,6 +647,15 @@ public actor SQLiteStore {
         ).compactMap(proEntitlement(from:))
     }
 
+    /// Claim after signature verification and before any authenticated operation.
+    /// SQLite uniqueness makes replay protection survive restarts and concurrent requests.
+    public func claimServiceAuth(issuer: String, jti: String, expiresAt: Int, now: Int) throws -> Bool {
+        try run("DELETE FROM service_auth_replays WHERE expires_at <= ?", [String(now)])
+        try run("INSERT OR IGNORE INTO service_auth_replays (issuer, jti, expires_at) VALUES (?, ?, ?)",
+                    [issuer, jti, String(expiresAt)])
+        return sqlite3_changes(db) == 1
+    }
+
     public func oauthSession(did: String) throws -> OAuthSessionRecord? {
         let rows = try query(
             "SELECT did, handle, token_json, dpop_key_json FROM oauth_sessions WHERE did = ? LIMIT 1",
@@ -831,6 +914,22 @@ public actor SQLiteStore {
         try run("DELETE FROM scheduled_jobs WHERE did = ? AND rkey = ?", [did, rkey])
     }
 
+    /// Serializes API edits with the worker claim without holding SQLite transactions across HTTP.
+    public func claimScheduleEdit(did: String, rkey: String, leaseID: String, now: String, expiresAt: String) throws -> Bool {
+        try run("DELETE FROM schedule_edit_leases WHERE expires_at <= ?", [now])
+        try run("""
+            INSERT OR IGNORE INTO schedule_edit_leases (did, rkey, lease_id, expires_at)
+            SELECT did, rkey, ?, ? FROM scheduled_jobs
+            WHERE did = ? AND rkey = ? AND status IN ('draft', 'scheduled', 'blocked', 'failed')
+                AND published_uri IS NULL
+            """, [leaseID, expiresAt, did, rkey])
+        return sqlite3_changes(db) == 1
+    }
+
+    public func releaseScheduleEdit(did: String, rkey: String, leaseID: String) throws {
+        try run("DELETE FROM schedule_edit_leases WHERE did = ? AND rkey = ? AND lease_id = ?", [did, rkey, leaseID])
+    }
+
     public func claimDueJobs(now: String, limit: Int = 10) throws -> [ScheduledJob] {
         let jobs = try query(
             """
@@ -839,12 +938,13 @@ public actor SQLiteStore {
                    published_uri, published_cid, depends_on_schedule_uri, parent_published_uri
             FROM scheduled_jobs
             WHERE status = 'scheduled'
+                AND NOT EXISTS (SELECT 1 FROM schedule_edit_leases e WHERE e.did = scheduled_jobs.did AND e.rkey = scheduled_jobs.rkey AND e.expires_at > ?)
                 AND COALESCE(scheduled_at, scheduled_for) <= ?
                 AND (next_attempt_at IS NULL OR next_attempt_at <= ?)
             ORDER BY scheduled_at ASC
             LIMIT ?
             """,
-            [now, now, String(limit)]
+            [now, now, now, String(limit)]
         ).compactMap(job(from:))
 
         for job in jobs {
@@ -1283,12 +1383,7 @@ public actor SQLiteStore {
         return plaintext
     }
 
-    private func authEncryptionKey() -> SymmetricKey? {
-        guard let raw = ProcessInfo.processInfo.environment["SKEJ_AUTH_ENCRYPTION_KEY"],
-              !raw.isEmpty
-        else { return nil }
-        return SymmetricKey(data: Data(SHA256.hash(data: Data(raw.utf8))))
-    }
+    private func authEncryptionKey() -> SymmetricKey? { authKey }
 }
 
 public struct OAuthStateRecord: Equatable, Sendable {
