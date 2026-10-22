@@ -11,6 +11,7 @@ RUN bun install --frozen-lockfile
 FROM dependencies AS build
 COPY apps/web apps/web
 COPY packages/lexicons packages/lexicons
+COPY test-fixtures test-fixtures
 
 ARG APP_ENV
 ARG NEXT_PUBLIC_APP_ENV
