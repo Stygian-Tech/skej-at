@@ -23,6 +23,7 @@ import {
   X,
 } from "lucide-react";
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import * as React from "react";
 
 import { AuthenticatedNav } from "@/components/AuthenticatedNav";
@@ -301,19 +302,6 @@ function needsReauth(account: ManagedAccount | null | undefined) {
   return account?.status === "needs_reauth";
 }
 
-/**
- * Reconnecting is just the normal OAuth start with the handle prefilled — the
- * user never has to remember or retype it. Accounts with no handle can't be
- * routed automatically, so those fall back to the sign-in form.
- */
-function reconnectAccount(account: ManagedAccount) {
-  if (!account.handle) {
-    window.location.href = "/app#connect-account";
-    return;
-  }
-  window.location.href = startOAuth(account.handle);
-}
-
 function ReconnectBanner({
   accounts,
   selectedAccountDid,
@@ -321,6 +309,21 @@ function ReconnectBanner({
   accounts: ManagedAccount[];
   selectedAccountDid: string | null;
 }) {
+  const router = useRouter();
+
+  /**
+   * Reconnecting is just the normal OAuth start with the handle prefilled — the
+   * user never has to remember or retype it. Accounts with no handle can't be
+   * routed automatically, so those fall back to the sign-in form.
+   */
+  function reconnectAccount(account: ManagedAccount) {
+    if (!account.handle) {
+      router.push("/app#connect-account");
+      return;
+    }
+    window.location.href = startOAuth(account.handle);
+  }
+
   const stale = accounts.filter(needsReauth);
   if (stale.length === 0) return null;
 
