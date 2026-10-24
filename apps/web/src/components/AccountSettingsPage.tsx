@@ -12,6 +12,7 @@ import {
   Users,
 } from "lucide-react";
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import * as React from "react";
 
 import { AuthenticatedNav } from "@/components/AuthenticatedNav";
@@ -85,6 +86,7 @@ function firstInitial(viewer: Viewer | null) {
 }
 
 export function AccountSettingsPage() {
+  const router = useRouter();
   const [authStatus, setAuthStatus] = React.useState<AuthStatus>("loading");
   const [viewer, setViewer] = React.useState<Viewer | null>(null);
   const [accounts, setAccounts] = React.useState<ManagedAccount[]>([]);
@@ -229,7 +231,7 @@ export function AccountSettingsPage() {
 
   async function signOut() {
     await logout();
-    window.location.href = "/";
+    router.push("/");
   }
 
   async function runMutation(action: () => Promise<void>, success: string) {
